@@ -470,9 +470,33 @@ final class OverlayView: NSView, NSTextViewDelegate {
         styleMenu.action = #selector(pickStyle(_:))
         styleControl = styleMenu
 
+        // Drag this into another app to drop the screenshot there as a file. The overlay covers the whole screen, so it
+        // turns see-through and click-through while the drag is in flight; if nothing takes the drop it comes back.
+        let dragHandle = DragHandle()
+        dragHandle.image = NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: "Drag out")
+        dragHandle.isBordered = false
+        dragHandle.contentTintColor = .labelColor
+        dragHandle.toolTip = "Drag into another app"
+        dragHandle.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        dragHandle.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        dragHandle.makeFile = { [weak self] in self?.makeDragFile() }
+        dragHandle.onBegan = { [weak self] in
+            self?.window?.alphaValue = 0
+            self?.window?.ignoresMouseEvents = true
+        }
+        dragHandle.onEnded = { [weak self] dropped in
+            guard let self = self else { return }
+            if dropped { self.onClose() } else {
+                self.window?.alphaValue = 1
+                self.window?.ignoresMouseEvents = false
+            }
+        }
+
         let views: [NSView] = toolButtons + [well, sizePicker, styleMenu,
             btn("arrow.uturn.backward", "Undo", #selector(undoAction)),
             btn("arrow.uturn.forward", "Redo", #selector(redoAction)),
+            btn("pin", "Pin", #selector(pinAction)),
+            dragHandle,
             btn("xmark", "Close", #selector(closeAction)),
             btn("arrow.down.to.line", "Save", #selector(saveAction)),
             btn("checkmark", "Copy", #selector(copyAction))]
@@ -524,6 +548,13 @@ final class OverlayView: NSView, NSTextViewDelegate {
     }
     @objc func closeAction() { onClose() }
     @objc func saveAction() { saveToFile(); onClose() }
+
+    /// Turns the selection (with its annotations) into a floating window right where it is on screen.
+    @objc func pinAction() {
+        guard let s = sel, let w = window, let bmp = rendered() else { return }
+        Pins.pin(bmp, frame: s.offsetBy(dx: w.frame.minX, dy: w.frame.minY))
+        onClose()
+    }
     @objc func copyAction() { copyAndClose() }
 
     /// Adds a finished annotation. Drawing something new ends the redo history.
@@ -569,6 +600,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
         else { return nil }
+        lastRegion = s   // remembered for "Repeat Last Region"
         bmp.size = s.size
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bmp)
@@ -589,9 +621,15 @@ final class OverlayView: NSView, NSTextViewDelegate {
     }
 
     func saveToFile() {
-        guard let png = rendered()?.representation(using: .png, properties: [:]) else { return }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        try? png.write(to: saveDir.appendingPathComponent("Shot \(fmt.string(from: Date())).png"))
+        if let bmp = rendered() { Output.write(bmp) }
+    }
+
+    /// For the drag handle: writes the screenshot to a temporary file (chosen format and name) and returns it.
+    func makeDragFile() -> URL? {
+        guard let bmp = rendered() else { return nil }
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Shot-drag", isDirectory: true)
+        try? FileManager.default.removeItem(at: dir)   // earlier drag files are no longer needed
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return Output.write(bmp, to: dir)
     }
 }

@@ -1,4 +1,4 @@
-// Stress test for the capture overlay: runs frame -> resize -> annotate -> export -> close many times and reports
+// Stress test for the capture overlay: runs frame -> resize -> annotate -> export -> close (or pin and unpin) many times and reports
 // whether memory keeps growing. It compiles the real overlay sources, so it catches regressions such as a window or
 // view (and the full-screen image it holds) staying alive after every capture.
 //
@@ -65,7 +65,12 @@ func oneCapture() {
     view.tool = .rect
     drag(CGPoint(x: 400, y: 300), CGPoint(x: 450, y: 320))      // grab and move an annotation
     _ = view.rendered()                                         // export, as ✓ and ↓ do
-    view.copyAndClose()
+    if done % 2 == 1 {                                          // every other capture ends as a pin, then the pin is closed
+        view.pinAction()
+        Pins.closeAll()
+    } else {
+        view.copyAndClose()
+    }
 }
 
 var done = 0

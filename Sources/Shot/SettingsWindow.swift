@@ -3,12 +3,16 @@ import Carbon
 import ServiceManagement
 
 /// The Settings window: shortcuts (click a button, press the new keys), save folder, and the other options.
-final class SettingsWindow: NSObject, NSWindowDelegate {
+final class SettingsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     static var shared: SettingsWindow?
 
     let window: NSWindow
     var buttons: [Mode: NSButton] = [:]
     let folderButton = NSButton()
+    let formatPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let delayPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    let nameField = NSTextField()
+    let exampleLabel = NSTextField(labelWithString: "")
     let clipPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     static let clipOptions: [(String, Int)] = [("Never", 0), ("30 seconds", 30), ("1 minute", 60), ("5 minutes", 300)]
     var recording: Mode?
@@ -32,7 +36,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         window.delegate = self
 
         var rows: [NSView] = []
-        for (mode, title) in [(Mode.region, "Capture Region"), (.window, "Capture Window"), (.fullscreen, "Capture Full Screen")] {
+        for (mode, title) in [(Mode.region, "Capture Region"), (.window, "Capture Window"), (.fullscreen, "Capture Full Screen"),
+                            (.repeatLast, "Repeat Last Region"), (.delayed, "Delayed Capture")] {
             let label = NSTextField(labelWithString: title)
             label.widthAnchor.constraint(equalToConstant: 150).isActive = true
             let b = NSButton(title: Shortcuts.current[mode]?.display ?? "", target: self, action: #selector(startRecording(_:)))
@@ -51,6 +56,49 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         folderButton.widthAnchor.constraint(equalToConstant: 140).isActive = true
         folderButton.title = SettingsWindow.folderTitle()
         rows.append(NSStackView(views: [folderLabel, folderButton]))
+
+        let delayLabel = NSTextField(labelWithString: "Default delay")
+        delayLabel.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        delayPopup.addItems(withTitles: delayChoices.map { "\($0) seconds" })
+        delayPopup.selectItem(at: delayChoices.firstIndex(of: delaySeconds) ?? 1)
+        delayPopup.target = self
+        delayPopup.action = #selector(delayChanged(_:))
+        delayPopup.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        rows.append(NSStackView(views: [delayLabel, delayPopup]))
+
+        // The countdown itself shows only the number, so the keys are explained here.
+        let delayHelp = NSTextField(labelWithString: "After the countdown the screen freezes with your last region already selected (a plain selection if there is none yet). While it counts down: press 0-9 to start over from that many seconds (0 = 10). Esc, a click on the countdown, or pressing the shortcut again cancels.")
+        delayHelp.font = .systemFont(ofSize: 11)
+        delayHelp.textColor = .secondaryLabelColor
+        delayHelp.maximumNumberOfLines = 5
+        delayHelp.preferredMaxLayoutWidth = 340
+        delayHelp.lineBreakMode = .byWordWrapping
+        rows.append(delayHelp)
+
+        let formatLabel = NSTextField(labelWithString: "Save format")
+        formatLabel.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        formatPopup.addItems(withTitles: SaveFormat.allCases.map(\.title))
+        formatPopup.selectItem(at: SaveFormat.allCases.firstIndex(of: saveFormat) ?? 0)
+        formatPopup.target = self
+        formatPopup.action = #selector(formatChanged(_:))
+        formatPopup.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        rows.append(NSStackView(views: [formatLabel, formatPopup]))
+
+        let nameLabel = NSTextField(labelWithString: "File name")
+        nameLabel.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        nameField.stringValue = namePattern
+        nameField.placeholderString = defaultNamePattern
+        nameField.delegate = self
+        nameField.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        rows.append(NSStackView(views: [nameLabel, nameField]))
+
+        exampleLabel.font = .systemFont(ofSize: 11)
+        exampleLabel.textColor = .secondaryLabelColor
+        exampleLabel.maximumNumberOfLines = 2
+        exampleLabel.preferredMaxLayoutWidth = 340
+        exampleLabel.lineBreakMode = .byWordWrapping
+        updateExample()
+        rows.append(exampleLabel)
 
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
@@ -160,6 +208,31 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
             b.state = b.state == .on ? .off : .on   // revert the checkbox
             note.stringValue = "Couldn't change the login item: \(error.localizedDescription)"
         }
+    }
+
+    func updateExample() {
+        exampleLabel.stringValue = "e.g. \(Output.example())\nIn the name: {date}  {time}  {n} (a counter)"
+    }
+
+    @objc func delayChanged(_ p: NSPopUpButton) {
+        delaySeconds = delayChoices[p.indexOfSelectedItem]
+        note.stringValue = "The Delayed Capture shortcut now waits \(delaySeconds) seconds. The menu's Other Delays still picks a different one for a single capture."
+        onChange()   // the menu shows the delay in its title
+    }
+
+    @objc func formatChanged(_ p: NSPopUpButton) {
+        saveFormat = SaveFormat.allCases[p.indexOfSelectedItem]
+        updateExample()
+        switch saveFormat {
+        case .png: note.stringValue = "PNG: lossless, and compact for flat colors and text."
+        case .jpg: note.stringValue = "JPG: lossy. For screenshots with text it is often no smaller than PNG."
+        case .heic: note.stringValue = "HEIC: roughly half the size of PNG, slightly lossy; not every app opens it."
+        }
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        namePattern = nameField.stringValue
+        updateExample()
     }
 
     @objc func toggleRetina(_ b: NSButton) {

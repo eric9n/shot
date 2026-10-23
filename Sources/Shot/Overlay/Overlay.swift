@@ -19,7 +19,7 @@ enum Overlay {
 
     static func dismiss() { (window?.contentView as? OverlayView)?.escape() }
 
-    static func show(cg: CGImage, screen: NSScreen, fullSelection: Bool, windows: [NSRect] = []) {
+    static func show(cg: CGImage, screen: NSScreen, fullSelection: Bool, windows: [NSRect] = [], preselect: NSRect? = nil) {
         guard window == nil else { return }
         let win: OverlayWindow
         if let w = spare {
@@ -34,6 +34,8 @@ enum Overlay {
             spare = win
         }
         win.setFrame(screen.frame, display: false)
+        win.alphaValue = 1                  // a drag-out may have left the window see-through
+        win.ignoresMouseEvents = false
         generation += 1
         let gen = generation
         let view: OverlayView
@@ -57,6 +59,9 @@ enum Overlay {
         }
         if fullSelection {
             view.sel = view.bounds
+            view.beginEditing()
+        } else if let r = preselect?.intersection(view.bounds), r.width >= 20, r.height >= 20 {
+            view.sel = r                    // "Repeat Last Region": start with the previous region already selected
             view.beginEditing()
         }
         window = win

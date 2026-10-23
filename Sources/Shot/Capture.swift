@@ -1,10 +1,18 @@
 import AppKit
 
 enum Mode: UInt32 {
-    case region = 1, window, fullscreen
+    case region = 1, window, fullscreen, repeatLast, delayed
 }
 
-func capture(_ mode: Mode) { freeze(mode) }
+func capture(_ mode: Mode) {
+    if mode == .delayed {
+        // The shortcut starts a countdown with the default delay; pressing it again cancels the countdown.
+        // When it ends the screen freezes with the last region already selected (plain selection if there is none yet).
+        if Countdown.active { Countdown.cancel() } else { Countdown.start(seconds: delaySeconds) { freeze(.repeatLast) } }
+        return
+    }
+    freeze(mode)
+}
 
 /// On-screen app windows on `screen`, front to back, in the overlay's coordinates (origin bottom-left of the screen).
 func windowRects(on screen: NSScreen) -> [NSRect] {
@@ -53,7 +61,8 @@ func freeze(_ mode: Mode) {
                                              kCGImageSourceThumbnailMaxPixelSize: max(screen.frame.width, screen.frame.height) * scale]
                 guard let src = CGImageSourceCreateWithURL(tmp as CFURL, nil),
                       let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return }
-                Overlay.show(cg: cg, screen: screen, fullSelection: mode == .fullscreen, windows: windows)
+                Overlay.show(cg: cg, screen: screen, fullSelection: mode == .fullscreen, windows: windows,
+                             preselect: mode == .repeatLast ? lastRegion : nil)
             }
         }
         try? task.run()

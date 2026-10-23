@@ -21,6 +21,8 @@ enum Shortcuts {
         .region: Shortcut(code: UInt32(kVK_ANSI_A), mods: UInt32(controlKey | optionKey), label: "A"),
         .window: Shortcut(code: UInt32(kVK_ANSI_W), mods: UInt32(controlKey | optionKey), label: "W"),
         .fullscreen: Shortcut(code: UInt32(kVK_ANSI_S), mods: UInt32(controlKey | optionKey), label: "S"),
+        .repeatLast: Shortcut(code: UInt32(kVK_ANSI_R), mods: UInt32(controlKey | optionKey), label: "R"),
+        .delayed: Shortcut(code: UInt32(kVK_ANSI_D), mods: UInt32(controlKey | optionKey), label: "D"),
     ]
     static var current: [Mode: Shortcut] = load()
     static var refs: [EventHotKeyRef] = []
@@ -28,7 +30,7 @@ enum Shortcuts {
 
     static func load() -> [Mode: Shortcut] {
         var out = defaults
-        for m in [Mode.region, .window, .fullscreen] {
+        for m in [Mode.region, .window, .fullscreen, .repeatLast, .delayed] {
             if let d = UserDefaults.standard.data(forKey: "shortcut.\(m.rawValue)"),
                let s = try? JSONDecoder().decode(Shortcut.self, from: d) { out[m] = s }
         }
@@ -60,6 +62,10 @@ enum Shortcuts {
                 GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
                                   nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
                 if id.id == Overlay.escapeID { DispatchQueue.main.async { Overlay.dismiss() } }
+                else if id.id == Countdown.escapeID { DispatchQueue.main.async { Countdown.cancel() } }
+                else if (Countdown.digitBase...Countdown.digitBase + 9).contains(id.id) {
+                    DispatchQueue.main.async { Countdown.restart(digit: Int(id.id - Countdown.digitBase)) }
+                }
                 else if let m = Mode(rawValue: id.id) { DispatchQueue.main.async { capture(m) } }
                 return noErr
             }, 1, &spec, nil, nil)
