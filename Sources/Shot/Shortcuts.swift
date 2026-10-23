@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import ServiceManagement
 
 struct Shortcut: Codable, Equatable {
     var code: UInt32
@@ -86,6 +87,8 @@ final class ShortcutWindow: NSObject, NSWindowDelegate {
     let window: NSWindow
     var buttons: [Mode: NSButton] = [:]
     let folderButton = NSButton()
+    let clipPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    static let clipOptions: [(String, Int)] = [("Never", 0), ("30 seconds", 30), ("1 minute", 60), ("5 minutes", 300)]
     var recording: Mode?
     var monitor: Any?
     let note = NSTextField(labelWithString: "Click a shortcut, then press the new keys (needs a modifier). Esc cancels. Save Folder is used by the ↓ button.")
@@ -135,9 +138,23 @@ final class ShortcutWindow: NSObject, NSWindowDelegate {
         let reset = NSButton(title: "Reset to Defaults", target: self, action: #selector(resetDefaults))
         let showIcon = NSButton(checkboxWithTitle: "Show menu bar icon", target: self, action: #selector(toggleIcon(_:)))
         showIcon.state = UserDefaults.standard.bool(forKey: "hideMenuIcon") ? .off : .on
+        let retina = NSButton(checkboxWithTitle: "Keep Retina resolution (uncheck to use less memory)", target: self, action: #selector(toggleRetina(_:)))
+        retina.state = keepRetina ? .on : .off
+        let login = NSButton(checkboxWithTitle: "Launch Shot at login", target: self, action: #selector(toggleLogin(_:)))
+        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+
+        let clipLabel = NSTextField(labelWithString: "Clear clipboard after")
+        clipLabel.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        clipPopup.addItems(withTitles: ShortcutWindow.clipOptions.map(\.0))
+        clipPopup.selectItem(at: ShortcutWindow.clipOptions.firstIndex { $0.1 == clipboardClearSeconds } ?? 0)
+        clipPopup.target = self
+        clipPopup.action = #selector(clipChanged(_:))
+        clipPopup.widthAnchor.constraint(equalToConstant: 140).isActive = true
+        let clipRow = NSStackView(views: [clipLabel, clipPopup])
+
         let quit = NSButton(title: "Quit Shot", target: nil, action: #selector(NSApplication.terminate(_:)))
         let bottom = NSStackView(views: [reset, quit])
-        let stack = NSStackView(views: rows + [showIcon, note, bottom])
+        let stack = NSStackView(views: rows + [clipRow, showIcon, retina, login, note, bottom])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
@@ -205,6 +222,27 @@ final class ShortcutWindow: NSObject, NSWindowDelegate {
         monitor = nil
         recording = nil
         refresh()
+    }
+
+    @objc func clipChanged(_ p: NSPopUpButton) {
+        clipboardClearSeconds = ShortcutWindow.clipOptions[p.indexOfSelectedItem].1
+        note.stringValue = clipboardClearSeconds == 0 ? "Copied screenshots stay on the clipboard."
+            : "A copied screenshot is removed after \(p.titleOfSelectedItem ?? "")  (only if you haven't copied something else)."
+    }
+
+    @objc func toggleLogin(_ b: NSButton) {
+        do {
+            if b.state == .on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            note.stringValue = b.state == .on ? "Shot will start when you log in." : "Shot will not start at login."
+        } catch {
+            b.state = b.state == .on ? .off : .on   // revert the checkbox
+            note.stringValue = "Couldn't change the login item: \(error.localizedDescription)"
+        }
+    }
+
+    @objc func toggleRetina(_ b: NSButton) {
+        keepRetina = b.state == .on
+        note.stringValue = keepRetina ? "New screenshots keep full Retina resolution." : "New screenshots use 1x resolution (softer, less memory)."
     }
 
     @objc func toggleIcon(_ b: NSButton) {

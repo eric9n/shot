@@ -47,6 +47,143 @@ extension Annotation {
     }
 }
 
+/// The eight grab points around the selection (AppKit coordinates: y grows upward, so "top" is maxY).
+enum Handle: CaseIterable {
+    case tl, t, tr, r, br, b, bl, l
+
+    func point(in r: NSRect) -> CGPoint {
+        switch self {
+        case .tl: return CGPoint(x: r.minX, y: r.maxY)
+        case .t: return CGPoint(x: r.midX, y: r.maxY)
+        case .tr: return CGPoint(x: r.maxX, y: r.maxY)
+        case .r: return CGPoint(x: r.maxX, y: r.midY)
+        case .br: return CGPoint(x: r.maxX, y: r.minY)
+        case .b: return CGPoint(x: r.midX, y: r.minY)
+        case .bl: return CGPoint(x: r.minX, y: r.minY)
+        case .l: return CGPoint(x: r.minX, y: r.midY)
+        }
+    }
+    var movesLeft: Bool { self == .tl || self == .l || self == .bl }
+    var movesRight: Bool { self == .tr || self == .r || self == .br }
+    var movesTop: Bool { self == .tl || self == .t || self == .tr }
+    var movesBottom: Bool { self == .bl || self == .b || self == .br }
+
+    var cursor: NSCursor {
+        switch self {
+        case .l, .r: return .resizeLeftRight
+        case .t, .b: return .resizeUpDown
+        default:
+            if #available(macOS 15, *) {
+                let pos: NSCursor.FrameResizePosition = self == .tl ? .topLeft : self == .tr ? .topRight : self == .bl ? .bottomLeft : .bottomRight
+                return NSCursor.frameResize(position: pos, directions: .all)
+            }
+            return .crosshair
+        }
+    }
+}
+
+/// Shows the screenshot by pointing a layer at the CGImage (no copy, no backing store of its own),
+/// plus the dim/border/size-label chrome as lightweight shape layers.
+final class Backdrop: NSView {
+    let cg: CGImage
+    // Solid-color layers need no backing store (a full-screen shape layer would rasterize ~20 MB).
+    let dimBands = (0..<4).map { _ in CALayer() }   // bottom, top, left, right of the selection
+    let border = CALayer()
+    let labelBox = CALayer()
+    let labelText = CATextLayer()
+    let handleLayers = Handle.allCases.map { _ in CALayer() }
+
+    init(frame: NSRect, cg: CGImage, scale: CGFloat) {
+        self.cg = cg
+        super.init(frame: frame)
+        wantsLayer = true
+        dimBands.forEach { $0.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor }
+        border.borderColor = NSColor.systemBlue.cgColor
+        border.borderWidth = 1.5
+        labelBox.backgroundColor = NSColor.systemBlue.cgColor
+        labelBox.cornerRadius = 4
+        labelText.fontSize = 12
+        labelText.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        labelText.foregroundColor = NSColor.white.cgColor
+        labelText.contentsScale = scale
+        labelBox.addSublayer(labelText)
+        for h in handleLayers {
+            h.bounds = CGRect(x: 0, y: 0, width: 9, height: 9)
+            h.backgroundColor = NSColor.white.cgColor
+            h.borderColor = NSColor.systemBlue.cgColor
+            h.borderWidth = 1.5
+        }
+        (dimBands + [border, labelBox] + handleLayers).forEach { layer?.addSublayer($0) }
+        update(sel: nil, label: "", handles: false)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        layer?.contents = cg
+        layer?.contentsGravity = .resize
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func update(sel: NSRect?, label: String, handles: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let s = sel {                                // dim everything except the selection
+            dimBands[0].frame = CGRect(x: 0, y: 0, width: bounds.width, height: s.minY)
+            dimBands[1].frame = CGRect(x: 0, y: s.maxY, width: bounds.width, height: bounds.height - s.maxY)
+            dimBands[2].frame = CGRect(x: 0, y: s.minY, width: s.minX, height: s.height)
+            dimBands[3].frame = CGRect(x: s.maxX, y: s.minY, width: bounds.width - s.maxX, height: s.height)
+            border.frame = s.insetBy(dx: -1.5, dy: -1.5)
+        } else {
+            dimBands[0].frame = bounds
+            for b in dimBands.dropFirst() { b.frame = .zero }
+        }
+        border.isHidden = sel == nil
+        for (h, l) in zip(Handle.allCases, handleLayers) {
+            l.isHidden = !(handles && sel != nil)
+            if let s = sel { l.position = h.point(in: s) }
+        }
+        labelBox.isHidden = sel == nil
+        if let s = sel {
+            let sz = (label as NSString).size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)])
+            var box = NSRect(x: s.minX, y: s.maxY + 6, width: sz.width + 16, height: sz.height + 6)
+            if box.maxY > bounds.maxY { box.origin.y = s.maxY - box.height - 4; box.origin.x += 4 }
+            labelBox.frame = box
+            labelText.frame = CGRect(x: 8, y: 3, width: sz.width + 4, height: sz.height)
+            labelText.string = label
+        }
+        CATransaction.commit()
+    }
+}
+
+/// Draws the annotations; sized to the selection only, so its backing store stays small.
+final class AnnotationView: NSView {
+    unowned let owner: OverlayView
+    init(owner: OverlayView) {
+        self.owner = owner
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ r: NSRect) {
+        let t = NSAffineTransform()
+        t.translateX(by: -frame.minX, yBy: -frame.minY)   // annotations live in overlay coordinates
+        t.concat()
+        owner.annotations.forEach { owner.renderAnnotation($0) }
+        if let c = owner.current { owner.renderAnnotation(c) }
+        if let i = owner.selected, owner.annotations.indices.contains(i) {
+            let box = NSBezierPath(rect: owner.annotations[i].bounds.insetBy(dx: -5, dy: -5))
+            box.lineWidth = 1
+            box.setLineDash([4, 3], count: 2, phase: 0)
+            NSColor.white.setStroke()
+            box.stroke()
+        }
+    }
+}
+
 /// Full-screen frozen-screenshot overlay: drag to select, annotate in place.
 final class OverlayView: NSView, NSTextFieldDelegate {
     let image: NSImage
@@ -64,12 +201,45 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     var moveLast: CGPoint?   // set while the selection itself is being dragged (hand tool)
     var toolButtons: [NSButton] = []
     var onClose: () -> Void = {}
+    var windowRects: [NSRect] = []   // Capture Window: clickable window frames, front to back
+    var hover: NSRect?               // window under the cursor, highlighted until you click or drag
+    var resizing: Handle?            // set while a selection handle is being dragged
+    var resizeBase = NSRect.zero
+    var resizeFrom = CGPoint.zero
 
-    init(frame: NSRect, image: NSImage) {
-        self.image = image
+    let pixelsWide: Int   // real pixel width of the screenshot (NSImage reports it unreliably)
+
+    let backdrop: Backdrop
+    let mosaicMap: NSBitmapImageRep   // whole screen at one pixel per mosaic block, built once up front
+    var annoView: AnnotationView!
+
+    init(frame: NSRect, cg: CGImage, scale: CGFloat) {
+        mosaicMap = OverlayView.makeMosaicMap(cg: cg, size: frame.size)
+        image = NSImage(cgImage: cg, size: frame.size)   // wraps the same CGImage, no copy
+        pixelsWide = cg.width
+        backdrop = Backdrop(frame: NSRect(origin: .zero, size: frame.size), cg: cg, scale: scale)
         super.init(frame: frame)
+        wantsLayer = true
+        addSubview(backdrop)
+        annoView = AnnotationView(owner: self)
+        annoView.isHidden = true
+        addSubview(annoView)
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {}   // nothing to draw: the layers do the work, so no full-screen backing store
+
+    /// Refreshes the layers after any state change (the view draws nothing itself, so needsDisplay can't be relied on).
+    func syncChrome() {
+        guard annoView != nil, backdrop.superview != nil else { return }
+        let shown = sel ?? (editing ? nil : hover)
+        let label = shown.map { "\(Int($0.width * pixelScale)) x \(Int($0.height * pixelScale))" } ?? ""
+        backdrop.update(sel: shown, label: label, handles: editing && sel != nil)
+        annoView.isHidden = sel == nil || !editing
+        if let s = sel { annoView.frame = s }
+        annoView.needsDisplay = true
+    }
 
     override var acceptsFirstResponder: Bool { true }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
@@ -83,6 +253,7 @@ final class OverlayView: NSView, NSTextFieldDelegate {
 
     func updateCursor(at p: CGPoint) {
         if let tb = toolbar, tb.frame.contains(p) { NSCursor.arrow.set() }
+        else if let h = resizing ?? handle(at: p) { h.cursor.set() }
         else if moveLast != nil { NSCursor.closedHand.set() }
         else if editing, tool == .move, sel?.contains(p) == true { NSCursor.openHand.set() }
         else if dragLast != nil { NSCursor.closedHand.set() }
@@ -90,8 +261,37 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         else { NSCursor.crosshair.set() }
     }
 
-    override func mouseMoved(with e: NSEvent) { updateCursor(at: convert(e.locationInWindow, from: nil)) }
+    /// The selection handle under the point, once the selection is fixed.
+    func handle(at p: CGPoint) -> Handle? {
+        guard editing, let s = sel else { return nil }
+        return Handle.allCases.first { hypot($0.point(in: s).x - p.x, $0.point(in: s).y - p.y) <= 9 }
+    }
+
+    func updateHover(at p: CGPoint) {
+        guard !editing, dragStart == nil, !windowRects.isEmpty else { return }
+        let h = windowRects.first { $0.contains(p) }
+        if h != hover { hover = h; syncChrome() }
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        updateHover(at: p)
+        updateCursor(at: p)
+    }
     override func cursorUpdate(with e: NSEvent) { updateCursor(at: convert(e.locationInWindow, from: nil)) }
+
+    /// Shrinks the screenshot to one pixel per block. Done before the layer takes the image: reading the pixels
+    /// again later makes the system rebuild a full-size copy.
+    static func makeMosaicMap(cg: CGImage, size: NSSize) -> NSBitmapImageRep {
+        let cols = Int(ceil(size.width / Canvas.mosaicBlock)), rows = Int(ceil(size.height / Canvas.mosaicBlock))
+        let map = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: cols, pixelsHigh: rows, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        if let ctx = NSGraphicsContext(bitmapImageRep: map) {
+            ctx.cgContext.interpolationQuality = .high
+            ctx.cgContext.draw(cg, in: CGRect(x: 0, y: 0, width: cols, height: rows))
+        }
+        return map
+    }
 
     /// Horizontal mirror that stays a template image, so contentTintColor still applies.
     static func mirrored(_ img: NSImage) -> NSImage {
@@ -109,52 +309,11 @@ final class OverlayView: NSView, NSTextFieldDelegate {
 
     // MARK: drawing
 
-    override func draw(_ r: NSRect) {
-        image.draw(in: bounds)
-        let dim = NSBezierPath(rect: bounds)
-        if let s = sel { dim.append(NSBezierPath(rect: s)); dim.windingRule = .evenOdd }   // dim everything but the selection
-        NSColor.black.withAlphaComponent(0.45).setFill()
-        dim.fill()
-        guard let s = sel else { return }
-
-        NSGraphicsContext.saveGraphicsState()
-        NSBezierPath(rect: s).addClip()
-        annotations.forEach { renderAnnotation($0) }
-        if let c = current { renderAnnotation(c) }
-        if let i = selected, annotations.indices.contains(i) {
-            let box = NSBezierPath(rect: annotations[i].bounds.insetBy(dx: -5, dy: -5))
-            box.lineWidth = 1
-            box.setLineDash([4, 3], count: 2, phase: 0)
-            NSColor.white.setStroke()
-            box.stroke()
-        }
-        NSGraphicsContext.restoreGraphicsState()
-
-        NSColor.systemBlue.setStroke()
-        let b = NSBezierPath(rect: s.insetBy(dx: -0.75, dy: -0.75))
-        b.lineWidth = 1.5
-        b.stroke()
-
-        let scale = pixelScale
-        let label = "\(Int(s.width * scale)) x \(Int(s.height * scale))" as NSString
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-                                                    .foregroundColor: NSColor.white]
-        let sz = label.size(withAttributes: attrs)
-        var box = NSRect(x: s.minX, y: s.maxY + 6, width: sz.width + 16, height: sz.height + 6)
-        if box.maxY > bounds.maxY { box.origin.y = s.maxY - box.height - 4; box.origin.x += 4 }
-        NSColor.systemBlue.setFill()
-        NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4).fill()
-        label.draw(at: CGPoint(x: box.minX + 8, y: box.minY + 3), withAttributes: attrs)
-    }
-
     func renderAnnotation(_ a: Annotation) {
-        Canvas.render(a, src: image, base: bounds)
+        Canvas.render(a, mosaic: mosaicMap)
     }
 
-    var pixelScale: CGFloat {
-        guard let rep = image.representations.first else { return 1 }
-        return CGFloat(rep.pixelsWide) / bounds.width
-    }
+    var pixelScale: CGFloat { CGFloat(pixelsWide) / bounds.width }
 
     // MARK: mouse
 
@@ -172,23 +331,32 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         }
         commitText()
         window?.makeFirstResponder(self)
-        guard let s = sel, s.contains(p) else { selected = nil; needsDisplay = true; return }
+        if let h = handle(at: p), let s = sel {
+            resizing = h
+            resizeBase = s
+            resizeFrom = p
+            selected = nil
+            h.cursor.set()
+            syncChrome()
+            return
+        }
+        guard let s = sel, s.contains(p) else { selected = nil; syncChrome(); return }
         if tool == .move {
             selected = nil
             moveLast = p
             NSCursor.closedHand.set()
-            needsDisplay = true
+            syncChrome()
             return
         }
         if let i = annotationIndex(at: p) {
             selected = i
             dragLast = p
             NSCursor.closedHand.set()
-            needsDisplay = true
+            syncChrome()
             return
         }
         selected = nil
-        needsDisplay = true
+        syncChrome()
         if tool == .text { beginText(at: p); return }
         current = Annotation(tool: tool, points: [p], color: color)
     }
@@ -196,8 +364,22 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     override func mouseDragged(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         if !editing, let a = dragStart {
+            hover = nil
             sel = NSRect(x: min(a.x, p.x), y: min(a.y, p.y), width: abs(a.x - p.x), height: abs(a.y - p.y))
-            needsDisplay = true
+            syncChrome()
+            return
+        }
+        if let h = resizing {
+            let dx = p.x - resizeFrom.x, dy = p.y - resizeFrom.y
+            let b = resizeBase, minSize: CGFloat = 20
+            var r = b
+            if h.movesLeft { let x = min(max(b.minX + dx, 0), b.maxX - minSize); r.origin.x = x; r.size.width = b.maxX - x }
+            if h.movesRight { r.size.width = min(max(b.width + dx, minSize), bounds.width - b.minX) }
+            if h.movesBottom { let y = min(max(b.minY + dy, 0), b.maxY - minSize); r.origin.y = y; r.size.height = b.maxY - y }
+            if h.movesTop { r.size.height = min(max(b.height + dy, minSize), bounds.height - b.minY) }
+            sel = r
+            placeToolbar()
+            syncChrome()
             return
         }
         if let last = moveLast, let s = sel {
@@ -207,26 +389,33 @@ final class OverlayView: NSView, NSTextFieldDelegate {
             moveLast = CGPoint(x: last.x + (r.minX - s.minX), y: last.y + (r.minY - s.minY))
             sel = r
             placeToolbar()
-            needsDisplay = true
+            syncChrome()
             return
         }
         if let last = dragLast, let i = selected, annotations.indices.contains(i) {
             let dx = p.x - last.x, dy = p.y - last.y
             annotations[i].points = annotations[i].points.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
             dragLast = p
-            needsDisplay = true
+            syncChrome()
             return
         }
         guard current != nil else { return }
         let q = clamp(p)
         if tool == .pen { current!.points.append(q) } else { current!.points = [current!.points[0], q] }
-        needsDisplay = true
+        syncChrome()
     }
 
     override func mouseUp(with e: NSEvent) {
         if !editing {
             dragStart = nil
-            if let s = sel, s.width > 4, s.height > 4 { beginEditing() } else { sel = nil; needsDisplay = true }
+            if let s = sel, s.width > 4, s.height > 4 { beginEditing() }
+            else if sel == nil, let h = hover { sel = h; hover = nil; beginEditing() }   // plain click on a window
+            else { sel = nil; syncChrome() }
+            return
+        }
+        if resizing != nil {
+            resizing = nil
+            updateCursor(at: convert(e.locationInWindow, from: nil))
             return
         }
         if moveLast != nil {
@@ -241,7 +430,7 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         }
         if let c = current, c.points.count > 1 { annotations.append(c) }
         current = nil
-        needsDisplay = true
+        syncChrome()
     }
 
     /// Topmost annotation under the point.
@@ -256,7 +445,7 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         case 53: onClose()
         case 36 where editing: copyAndClose()
         case 51, 117:
-            if let i = selected, annotations.indices.contains(i) { annotations.remove(at: i); selected = nil; needsDisplay = true }
+            if let i = selected, annotations.indices.contains(i) { annotations.remove(at: i); selected = nil; syncChrome() }
         default:
             if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers == "z" { undo() } else { super.keyDown(with: e) }
         }
@@ -288,7 +477,7 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         }
         f.removeFromSuperview()
         window?.makeFirstResponder(self)
-        needsDisplay = true
+        syncChrome()
     }
 
     func controlTextDidEndEditing(_ obj: Notification) { commitText() }
@@ -349,7 +538,7 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         toolbar = tb
         placeToolbar()
         refreshTools()
-        needsDisplay = true
+        syncChrome()
     }
 
     func placeToolbar() {
@@ -374,7 +563,7 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     @objc func copyAction() { copyAndClose() }
 
     func undo() {
-        if !annotations.isEmpty { annotations.removeLast(); selected = nil; needsDisplay = true }
+        if !annotations.isEmpty { annotations.removeLast(); selected = nil; syncChrome() }
     }
 
     // MARK: output
@@ -421,7 +610,7 @@ enum Overlay {
 
     static func dismiss() { (window?.contentView as? OverlayView)?.onClose() }
 
-    static func show(image: NSImage, screen: NSScreen, fullSelection: Bool) {
+    static func show(cg: CGImage, screen: NSScreen, fullSelection: Bool, windows: [NSRect] = []) {
         guard window == nil else { return }
         let win = EditorWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         win.level = .screenSaver
@@ -430,7 +619,7 @@ enum Overlay {
         win.isReleasedWhenClosed = false
         win.setFrame(screen.frame, display: true)
         win.acceptsMouseMovedEvents = true
-        let view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image)
+        let view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), cg: cg, scale: screen.backingScaleFactor)
         view.onClose = {
             if let r = escRef { UnregisterEventHotKey(r); escRef = nil }
             win.orderOut(nil)
@@ -442,6 +631,7 @@ enum Overlay {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { _ = malloc_zone_pressure_relief(nil, 0) }
         }
         win.contentView = view
+        view.windowRects = windows
         if fullSelection {
             view.sel = view.bounds
             view.beginEditing()
@@ -458,5 +648,9 @@ enum Overlay {
         win.makeKeyAndOrderFront(nil)
         win.makeFirstResponder(view)
         NSCursor.crosshair.set()
+        if !windows.isEmpty {   // highlight the window already under the cursor
+            let m = NSEvent.mouseLocation
+            view.updateHover(at: CGPoint(x: m.x - screen.frame.minX, y: m.y - screen.frame.minY))
+        }
     }
 }
