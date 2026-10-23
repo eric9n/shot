@@ -85,7 +85,7 @@ enum Handle: CaseIterable {
 /// Shows the screenshot by pointing a layer at the CGImage (no copy, no backing store of its own),
 /// plus the dim/border/size-label chrome as lightweight shape layers.
 final class Backdrop: NSView {
-    let cg: CGImage
+    private(set) var cg: CGImage?
     // Solid-color layers need no backing store (a full-screen shape layer would rasterize ~20 MB).
     let dimBands = (0..<4).map { _ in CALayer() }   // bottom, top, left, right of the selection
     let border = CALayer()
@@ -93,8 +93,7 @@ final class Backdrop: NSView {
     let labelText = CATextLayer()
     let handleLayers = Handle.allCases.map { _ in CALayer() }
 
-    init(frame: NSRect, cg: CGImage, scale: CGFloat) {
-        self.cg = cg
+    init(frame: NSRect, scale: CGFloat) {
         super.init(frame: frame)
         wantsLayer = true
         dimBands.forEach { $0.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor }
@@ -121,6 +120,13 @@ final class Backdrop: NSView {
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() {
         layer?.contents = cg
+        layer?.contentsGravity = .resize
+    }
+
+    /// Points the layer at a screenshot, or at nothing (nil) to release it.
+    func setImage(_ image: CGImage?) {
+        cg = image
+        layer?.contents = image
         layer?.contentsGravity = .resize
     }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -186,7 +192,7 @@ final class AnnotationView: NSView {
 
 /// Full-screen frozen-screenshot overlay: drag to select, annotate in place.
 final class OverlayView: NSView, NSTextFieldDelegate {
-    let image: NSImage
+    var image = NSImage(size: .zero)
     var sel: NSRect?
     var editing = false
     var dragStart: CGPoint?
@@ -207,17 +213,16 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     var resizeBase = NSRect.zero
     var resizeFrom = CGPoint.zero
 
-    let pixelsWide: Int   // real pixel width of the screenshot (NSImage reports it unreliably)
+    var pixelsWide = 1   // real pixel width of the screenshot (NSImage reports it unreliably)
 
     let backdrop: Backdrop
-    let mosaicMap: NSBitmapImageRep   // whole screen at one pixel per mosaic block, built once up front
+    var mosaicMap = OverlayView.blankMap   // whole screen at one pixel per mosaic block, built per capture
     var annoView: AnnotationView!
 
-    init(frame: NSRect, cg: CGImage, scale: CGFloat) {
-        mosaicMap = OverlayView.makeMosaicMap(cg: cg, size: frame.size)
-        image = NSImage(cgImage: cg, size: frame.size)   // wraps the same CGImage, no copy
-        pixelsWide = cg.width
-        backdrop = Backdrop(frame: NSRect(origin: .zero, size: frame.size), cg: cg, scale: scale)
+    /// AppKit in this OS keeps every NSView it ever created alive (a notification observer retains it), and a view
+    /// holds its screenshot. So there is exactly one OverlayView; each capture loads into it and `end()` empties it.
+    init(frame: NSRect, scale: CGFloat) {
+        backdrop = Backdrop(frame: NSRect(origin: .zero, size: frame.size), scale: scale)
         super.init(frame: frame)
         wantsLayer = true
         addSubview(backdrop)
@@ -225,6 +230,52 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         annoView.isHidden = true
         addSubview(annoView)
     }
+
+    static let blankMap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1, bitsPerSample: 8, samplesPerPixel: 4,
+                                           hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+
+    /// Starts a capture session in this (reused) view.
+    func begin(cg: CGImage, size: NSSize, windows: [NSRect]) {
+        setFrameSize(size)
+        backdrop.frame = NSRect(origin: .zero, size: size)
+        mosaicMap = OverlayView.makeMosaicMap(cg: cg, size: size)
+        image = NSImage(cgImage: cg, size: size)   // wraps the same CGImage, no copy
+        pixelsWide = cg.width
+        backdrop.setImage(cg)
+        reset()
+        windowRects = windows
+        syncChrome()
+    }
+
+    /// Ends the session and lets go of the screenshot.
+    func end() {
+        commitText()
+        backdrop.setImage(nil)
+        image = NSImage(size: .zero)
+        mosaicMap = OverlayView.blankMap
+        pixelsWide = 1
+        reset()
+        toolbar?.isHidden = true
+        annoView.isHidden = true
+    }
+
+    private func reset() {
+        sel = nil
+        editing = false
+        dragStart = nil
+        annotations = []
+        current = nil
+        tool = .rect
+        selected = nil
+        dragLast = nil
+        moveLast = nil
+        resizing = nil
+        hover = nil
+        windowRects = []
+        field?.removeFromSuperview()
+        field = nil
+    }
+
     required init?(coder: NSCoder) { fatalError() }
 
     override var wantsUpdateLayer: Bool { true }
@@ -487,6 +538,13 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     func beginEditing() {
         editing = true
         tool = .move   // after framing, the first thing you usually want is to nudge the selection
+        if let tb = toolbar {   // built once, reused by later captures
+            tb.isHidden = false
+            placeToolbar()
+            refreshTools()
+            syncChrome()
+            return
+        }
         let tb = NSView()
         tb.wantsLayer = true
         tb.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
@@ -604,7 +662,12 @@ final class OverlayView: NSView, NSTextFieldDelegate {
 }
 
 enum Overlay {
-    static var window: EditorWindow?
+    static var window: EditorWindow?       // the overlay currently on screen, nil when idle
+    /// The one overlay window, reused for every capture. AppKit never fully releases windows that were created and
+    /// closed repeatedly (each kept its screenshot alive, ~22 MB per capture), so we never create a second one.
+    static var spare: EditorWindow?
+    static var view: OverlayView?           // the one overlay view, see OverlayView.init
+    static var generation = 0               // lets a stale timeout tell it belongs to an earlier capture
     static let escapeID: UInt32 = 99
     static var escRef: EventHotKeyRef?
 
@@ -612,26 +675,40 @@ enum Overlay {
 
     static func show(cg: CGImage, screen: NSScreen, fullSelection: Bool, windows: [NSRect] = []) {
         guard window == nil else { return }
-        let win = EditorWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        win.level = .screenSaver
-        win.hasShadow = false
-        win.isOpaque = true
-        win.isReleasedWhenClosed = false
-        win.setFrame(screen.frame, display: true)
-        win.acceptsMouseMovedEvents = true
-        let view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), cg: cg, scale: screen.backingScaleFactor)
+        let win: EditorWindow
+        if let w = spare {
+            win = w
+        } else {
+            win = EditorWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            win.level = .screenSaver
+            win.hasShadow = false
+            win.isOpaque = true
+            win.isReleasedWhenClosed = false
+            win.acceptsMouseMovedEvents = true
+            spare = win
+        }
+        win.setFrame(screen.frame, display: false)
+        generation += 1
+        let gen = generation
+        let view: OverlayView
+        if let v = Overlay.view {
+            view = v
+        } else {
+            view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), scale: screen.backingScaleFactor)
+            Overlay.view = view
+            win.contentView = view
+        }
+        view.begin(cg: cg, size: screen.frame.size, windows: windows)
         view.onClose = {
             if let r = escRef { UnregisterEventHotKey(r); escRef = nil }
+            view.end()              // releases the screenshot
             win.orderOut(nil)
-            win.contentView = nil   // breaks win -> view -> onClose -> win, so the screenshot is freed
             window = nil
             NSCursor.arrow.set()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { NSCursor.arrow.set() }
             // hand freed screenshot pages back to the OS instead of letting the allocator sit on them
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { _ = malloc_zone_pressure_relief(nil, 0) }
         }
-        win.contentView = view
-        view.windowRects = windows
         if fullSelection {
             view.sel = view.bounds
             view.beginEditing()
@@ -642,7 +719,7 @@ enum Overlay {
         RegisterEventHotKey(UInt32(kVK_Escape), 0, EventHotKeyID(signature: 0x53484F54, id: escapeID),
                             GetApplicationEventTarget(), 0, &escRef)
         DispatchQueue.main.asyncAfter(deadline: .now() + 45) {
-            if window === win, !view.editing { view.onClose() }
+            if gen == generation, window != nil, !view.editing { view.onClose() }
         }
         NSApp.activate(ignoringOtherApps: true)
         win.makeKeyAndOrderFront(nil)
