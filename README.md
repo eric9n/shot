@@ -25,3 +25,7 @@ cp -R Shot.app /Applications/
 
 - 抓屏使用系统自带的 `/usr/sbin/screencapture`（只用来抓一张整屏图，选区与标注是 Shot 自己画的）。
 - 图标由 `make-icon.swift` 绘制，`build.sh` 会调用它并用 `iconutil` 合成 `.icns`。`icon/` 里是浅色/深色预览和分层素材。
+
+## 许可证
+
+[MIT](LICENSE)
