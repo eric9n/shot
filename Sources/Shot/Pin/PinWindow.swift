@@ -31,16 +31,33 @@ final class PinView: NSView {
         layer?.contentsGravity = .resize
     }
 
-    /// Zooms around the window's center. 1 point of scroll is 1% (clamped to 20%…500% of the pinned size).
-    func zoom(by delta: CGFloat) {
+    /// Scales the window around its center, clamped to 20%…500% of the pinned size.
+    func zoom(factor: CGFloat) {
         guard let w = window, baseSize.width > 0 else { return }
-        let width = min(max(w.frame.width * (1 + delta * 0.01), baseSize.width * 0.2), baseSize.width * 5)
+        let width = min(max(w.frame.width * factor, baseSize.width * 0.2), baseSize.width * 5)
         let height = width * baseSize.height / baseSize.width
         let c = CGPoint(x: w.frame.midX, y: w.frame.midY)
         w.setFrame(NSRect(x: c.x - width / 2, y: c.y - height / 2, width: width, height: height), display: true)
     }
 
-    override func scrollWheel(with e: NSEvent) { zoom(by: e.scrollingDeltaY) }
+    /// Back to the size it was pinned at.
+    func resetZoom() {
+        guard let w = window, baseSize.width > 0 else { return }
+        let c = CGPoint(x: w.frame.midX, y: w.frame.midY)
+        w.setFrame(NSRect(x: c.x - baseSize.width / 2, y: c.y - baseSize.height / 2, width: baseSize.width, height: baseSize.height), display: true)
+    }
+
+    /// Scroll: a trackpad reports pixels, a mouse wheel reports lines, so a wheel notch counts for more. One event never
+    /// changes the size by more than 10%.
+    func zoom(byScroll delta: CGFloat, precise: Bool) {
+        zoom(factor: max(0.9, min(1.1, 1 + delta * (precise ? 0.01 : 0.06))))
+    }
+
+    override func scrollWheel(with e: NSEvent) { zoom(byScroll: e.scrollingDeltaY, precise: e.hasPreciseScrollingDeltas) }
+
+    // Trackpad: pinch to zoom, two-finger double-tap (smart zoom) back to the pinned size.
+    override func magnify(with e: NSEvent) { zoom(factor: 1 + e.magnification) }
+    override func smartMagnify(with e: NSEvent) { resetZoom() }
 
     override func mouseDown(with e: NSEvent) {
         if e.clickCount == 2 { onClose() } else { window?.performDrag(with: e) }
@@ -50,6 +67,9 @@ final class PinView: NSView {
         if e.keyCode == 53 { onClose() }                                                     // Esc
         else if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers == "c" { copyPin() }
         else if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers == "s" { savePin() }
+        else if e.charactersIgnoringModifiers == "+" || e.charactersIgnoringModifiers == "=" { zoom(factor: 1.1) }
+        else if e.charactersIgnoringModifiers == "-" { zoom(factor: 1 / 1.1) }
+        else if e.charactersIgnoringModifiers == "0" { resetZoom() }
         else { super.keyDown(with: e) }
     }
 
@@ -57,6 +77,10 @@ final class PinView: NSView {
         let m = NSMenu()
         m.addItem(withTitle: "Copy", action: #selector(copyPin), keyEquivalent: "").target = self
         m.addItem(withTitle: "Save", action: #selector(savePin), keyEquivalent: "").target = self
+        m.addItem(.separator())
+        m.addItem(withTitle: "Zoom In", action: #selector(zoomIn), keyEquivalent: "").target = self
+        m.addItem(withTitle: "Zoom Out", action: #selector(zoomOut), keyEquivalent: "").target = self
+        m.addItem(withTitle: "Actual Size", action: #selector(actualSize), keyEquivalent: "").target = self
         let opacity = NSMenu()
         for (title, value) in [("100%", 1.0), ("75%", 0.75), ("50%", 0.5), ("25%", 0.25)] {
             let item = NSMenuItem(title: title, action: #selector(setOpacity(_:)), keyEquivalent: "")
@@ -76,6 +100,9 @@ final class PinView: NSView {
 
     @objc func copyPin() { if let b = bitmap { copyToClipboard(b) } }
     @objc func savePin() { if let b = bitmap { Output.write(b) } }
+    @objc func zoomIn() { zoom(factor: 1.25) }
+    @objc func zoomOut() { zoom(factor: 0.8) }
+    @objc func actualSize() { resetZoom() }
     @objc func setOpacity(_ item: NSMenuItem) { window?.alphaValue = CGFloat(item.representedObject as? Double ?? 1) }
     @objc func closePin() { onClose() }
     @objc func closeAll() { Pins.closeAll() }
