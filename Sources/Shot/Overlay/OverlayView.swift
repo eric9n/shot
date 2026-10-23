@@ -1,7 +1,7 @@
 import AppKit
 
 /// Full-screen frozen-screenshot overlay: drag to select, annotate in place.
-final class OverlayView: NSView, NSTextFieldDelegate {
+final class OverlayView: NSView, NSTextViewDelegate {
     var image = NSImage(size: .zero)
     var sel: NSRect?
     var editing = false
@@ -10,7 +10,8 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     var current: Annotation?
     var tool: Tool = .rect
     var color: NSColor = .systemRed
-    var field: NSTextField?
+    var field: NSTextView?
+    var textStack: AnnotationRenderer.TextLayout?   // keeps the editor's storage alive while typing
     var toolbar: NSView?
     var selected: Int?
     var dragLast: CGPoint?
@@ -219,6 +220,16 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         selected = nil
         syncChrome()
         if tool == .text { beginText(at: p); return }
+        if tool == .number {
+            // Next number = highest one on the canvas + 1, so undo and delete behave naturally.
+            let n = (annotations.filter { $0.tool == .number }.compactMap { Int($0.text) }.max() ?? 0) + 1
+            annotations.append(Annotation(tool: .number, points: [p], color: color, text: "\(n)"))
+            selected = annotations.count - 1
+            dragLast = p                      // dragging right after the click nudges the marker into place
+            NSCursor.closedHand.set()
+            syncChrome()
+            return
+        }
         current = Annotation(tool: tool, points: [p], color: color)
     }
 
@@ -303,7 +314,7 @@ final class OverlayView: NSView, NSTextFieldDelegate {
 
     override func keyDown(with e: NSEvent) {
         switch e.keyCode {
-        case 53: onClose()
+        case 53: escape()
         case 36 where editing: copyAndClose()
         case 51, 117:
             if let i = selected, annotations.indices.contains(i) { annotations.remove(at: i); selected = nil; syncChrome() }
@@ -315,33 +326,64 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     // MARK: text
 
     func beginText(at p: CGPoint) {
-        let f = NSTextField(frame: NSRect(x: p.x, y: p.y - 12, width: 260, height: 28))
-        f.font = .boldSystemFont(ofSize: 20)
-        f.textColor = color
-        f.drawsBackground = false
-        f.isBordered = false
-        f.focusRingType = .none
-        f.delegate = self
-        f.target = self
-        f.action = #selector(commitText)
-        addSubview(f)
-        window?.makeFirstResponder(f)
-        field = f
+        let top = p.y + AnnotationRenderer.textFont.boundingRectForFont.height / 2   // the click lands mid-first-line
+        // Built on an explicit TextKit 1 stack (the same one AnnotationRenderer draws with), not the default one.
+        let stack = AnnotationRenderer.TextLayout("", color: color)
+        let t = NSTextView(frame: NSRect(x: p.x, y: top - 24, width: 24, height: 24), textContainer: stack.container)
+        textStack = stack
+        t.font = AnnotationRenderer.textFont
+        t.textColor = color
+        t.insertionPointColor = color
+        t.drawsBackground = false
+        t.isRichText = false
+        t.textContainerInset = .zero
+        t.textContainer?.widthTracksTextView = false
+        t.isHorizontallyResizable = true
+        t.isVerticallyResizable = true
+        t.delegate = self
+        addSubview(t)
+        window?.makeFirstResponder(t)
+        field = t
+        fitEditor()
+    }
+
+    /// Grows the editor to fit its text, keeping the top-left corner fixed.
+    func fitEditor() {
+        guard let t = field else { return }
+        let size = AnnotationRenderer.textSize(t.string.isEmpty ? " " : t.string)
+        t.frame = NSRect(x: t.frame.minX, y: t.frame.maxY - size.height, width: max(size.width, 12) + 4, height: size.height)
+    }
+
+    func textDidChange(_ notification: Notification) { fitEditor() }
+
+    /// Return starts a new line; ⌘Return (or Esc, a click elsewhere, picking another tool) finishes the text.
+    func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        if selector == #selector(NSResponder.insertNewline(_:)), NSApp.currentEvent?.modifierFlags.contains(.command) == true {
+            commitText()
+            return true
+        }
+        return false
     }
 
     @objc func commitText() {
-        guard let f = field else { return }
+        guard let t = field else { return }
         field = nil
-        if !f.stringValue.isEmpty {
-            annotations.append(Annotation(tool: .text, points: [CGPoint(x: f.frame.minX + 2, y: f.frame.minY + 3)],
-                                          color: f.textColor ?? color, text: f.stringValue))
+        let text = t.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            annotations.append(Annotation(tool: .text, points: [CGPoint(x: t.frame.minX, y: t.frame.maxY)],
+                                          color: t.textColor ?? color, text: text))
         }
-        f.removeFromSuperview()
+        t.delegate = nil
+        t.removeFromSuperview()
+        textStack = nil
         window?.makeFirstResponder(self)
         syncChrome()
     }
 
-    func controlTextDidEndEditing(_ obj: Notification) { commitText() }
+    /// Esc: finish the text being typed, otherwise close the overlay.
+    func escape() {
+        if field != nil { commitText() } else { onClose() }
+    }
 
     // MARK: toolbar
 
@@ -377,7 +419,8 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         let tools: [(String, String, Tool)] = [
             ("hand.raised", "Move", .move), ("rectangle", "Rect", .rect), ("circle", "Oval", .ellipse), ("line.diagonal", "Line", .line),
             ("arrow.up.right", "Arrow", .arrow), ("pencil", "Pen", .pen),
-            ("checkerboard.rectangle", "Mosaic", .mosaic), ("textformat", "Text", .text)]
+            ("checkerboard.rectangle", "Mosaic", .mosaic), ("textformat", "Text", .text),
+            ("1.circle", "Number", .number)]
         toolButtons = tools.map { btn($0.0, $0.1, #selector(pickTool(_:)), tag: $0.2.rawValue) }
 
         let well = NSColorWell(style: .minimal)

@@ -17,7 +17,7 @@ enum Overlay {
     static let escapeID: UInt32 = 99
     static var escRef: EventHotKeyRef?
 
-    static func dismiss() { (window?.contentView as? OverlayView)?.onClose() }
+    static func dismiss() { (window?.contentView as? OverlayView)?.escape() }
 
     static func show(cg: CGImage, screen: NSScreen, fullSelection: Bool, windows: [NSRect] = []) {
         guard window == nil else { return }
