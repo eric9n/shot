@@ -334,13 +334,16 @@ final class OverlayView: NSView, NSTextViewDelegate {
         switch e.keyCode {
         case 53: escape()
         case 36 where editing: copyAndClose()
+        case 35 where editing && e.modifierFlags.intersection([.command, .control, .option]).isEmpty:   // P: pin
+            pinAction()
         case 51, 117:
             if let i = selected, annotations.indices.contains(i) { annotations.remove(at: i); selected = nil; syncChrome() }
         case 123, 124, 125, 126 where editing:   // ← → ↓ ↑ ; ⇧ moves 10 points instead of 1
             let step: CGFloat = e.modifierFlags.contains(.shift) ? 10 : 1
             nudge(dx: e.keyCode == 123 ? -step : e.keyCode == 124 ? step : 0, dy: e.keyCode == 125 ? -step : e.keyCode == 126 ? step : 0)
         default:
-            if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers?.lowercased() == "z" {
+            let key = e.charactersIgnoringModifiers?.lowercased()
+            if e.modifierFlags.contains(.command), key == "z" {
                 if e.modifierFlags.contains(.shift) { redo() } else { undo() }
             } else {
                 super.keyDown(with: e)

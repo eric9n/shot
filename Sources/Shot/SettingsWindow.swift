@@ -47,6 +47,15 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             buttons[mode] = b
             rows.append(NSStackView(views: [label, b]))
         }
+        // Keys that work while you annotate; the toolbar itself stays free of hints.
+        let keysHelp = NSTextField(labelWithString: "While annotating: Return copies, P pins, ⌘Z undoes, ⇧⌘Z redoes, arrow keys nudge (⇧ for 10 points), Delete removes the selected annotation, Esc closes.")
+        keysHelp.font = .systemFont(ofSize: 11)
+        keysHelp.textColor = .secondaryLabelColor
+        keysHelp.maximumNumberOfLines = 4
+        keysHelp.preferredMaxLayoutWidth = 340
+        keysHelp.lineBreakMode = .byWordWrapping
+        rows.append(keysHelp)
+
         let folderLabel = NSTextField(labelWithString: "Save Folder")
         folderLabel.widthAnchor.constraint(equalToConstant: 150).isActive = true
         folderButton.target = self
