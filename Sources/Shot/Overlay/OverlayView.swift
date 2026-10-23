@@ -10,6 +10,12 @@ final class OverlayView: NSView, NSTextViewDelegate {
     var current: Annotation?
     var tool: Tool = .rect
     var color: NSColor = .systemRed
+    var sizeLevel = 1                  // 0 thin, 1 medium, 2 thick: applies to what you draw next (and to the selected one when changed)
+    var style = 0                      // 0 solid, 1 dashed, 2 filled
+    var textLevel = 1                  // size level the text being typed started with
+    var redoStack: [Annotation] = []   // annotations removed by undo, restored by redo until something new is drawn
+    var sizeControl: NSSegmentedControl?
+    var styleControl: NSPopUpButton?
     var field: NSTextView?
     var textStack: AnnotationRenderer.TextLayout?   // keeps the editor's storage alive while typing
     var toolbar: NSView?
@@ -75,6 +81,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
         editing = false
         dragStart = nil
         annotations = []
+        redoStack = []
         current = nil
         tool = .rect
         selected = nil
@@ -223,14 +230,14 @@ final class OverlayView: NSView, NSTextViewDelegate {
         if tool == .number {
             // Next number = highest one on the canvas + 1, so undo and delete behave naturally.
             let n = (annotations.filter { $0.tool == .number }.compactMap { Int($0.text) }.max() ?? 0) + 1
-            annotations.append(Annotation(tool: .number, points: [p], color: color, text: "\(n)"))
+            add(Annotation(tool: .number, points: [p], color: color, text: "\(n)", level: sizeLevel, style: style))
             selected = annotations.count - 1
             dragLast = p                      // dragging right after the click nudges the marker into place
             NSCursor.closedHand.set()
             syncChrome()
             return
         }
-        current = Annotation(tool: tool, points: [p], color: color)
+        current = Annotation(tool: tool, points: [p], color: color, level: sizeLevel, style: style)
     }
 
     override func mouseDragged(with e: NSEvent) {
@@ -273,7 +280,18 @@ final class OverlayView: NSView, NSTextViewDelegate {
         }
         guard current != nil else { return }
         let q = clamp(p)
-        if tool == .pen { current!.points.append(q) } else { current!.points = [current!.points[0], q] }
+        if tool == .pen || tool == .highlighter {
+            if e.modifierFlags.contains(.shift) {
+                // Holding ⇧ gives a straight line, locked to horizontal or vertical (whichever way you moved more).
+                let start = current!.points[0]
+                let end = abs(q.x - start.x) >= abs(q.y - start.y) ? CGPoint(x: q.x, y: start.y) : CGPoint(x: start.x, y: q.y)
+                current!.points = [start, end]
+            } else {
+                current!.points.append(q)
+            }
+        } else {
+            current!.points = [current!.points[0], q]
+        }
         syncChrome()
     }
 
@@ -300,7 +318,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
             updateCursor(at: convert(e.locationInWindow, from: nil))
             return
         }
-        if let c = current, c.points.count > 1 { annotations.append(c) }
+        if let c = current, c.points.count > 1 { add(c) }
         current = nil
         syncChrome()
     }
@@ -318,20 +336,29 @@ final class OverlayView: NSView, NSTextViewDelegate {
         case 36 where editing: copyAndClose()
         case 51, 117:
             if let i = selected, annotations.indices.contains(i) { annotations.remove(at: i); selected = nil; syncChrome() }
+        case 123, 124, 125, 126 where editing:   // ← → ↓ ↑ ; ⇧ moves 10 points instead of 1
+            let step: CGFloat = e.modifierFlags.contains(.shift) ? 10 : 1
+            nudge(dx: e.keyCode == 123 ? -step : e.keyCode == 124 ? step : 0, dy: e.keyCode == 125 ? -step : e.keyCode == 126 ? step : 0)
         default:
-            if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers == "z" { undo() } else { super.keyDown(with: e) }
+            if e.modifierFlags.contains(.command), e.charactersIgnoringModifiers?.lowercased() == "z" {
+                if e.modifierFlags.contains(.shift) { redo() } else { undo() }
+            } else {
+                super.keyDown(with: e)
+            }
         }
     }
 
     // MARK: text
 
     func beginText(at p: CGPoint) {
-        let top = p.y + AnnotationRenderer.textFont.boundingRectForFont.height / 2   // the click lands mid-first-line
+        textLevel = sizeLevel
+        let font = AnnotationRenderer.textFont(textLevel)
+        let top = p.y + font.boundingRectForFont.height / 2   // the click lands mid-first-line
         // Built on an explicit TextKit 1 stack (the same one AnnotationRenderer draws with), not the default one.
-        let stack = AnnotationRenderer.TextLayout("", color: color)
+        let stack = AnnotationRenderer.TextLayout("", color: color, level: textLevel)
         let t = NSTextView(frame: NSRect(x: p.x, y: top - 24, width: 24, height: 24), textContainer: stack.container)
         textStack = stack
-        t.font = AnnotationRenderer.textFont
+        t.font = font
         t.textColor = color
         t.insertionPointColor = color
         t.drawsBackground = false
@@ -350,7 +377,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
     /// Grows the editor to fit its text, keeping the top-left corner fixed.
     func fitEditor() {
         guard let t = field else { return }
-        let size = AnnotationRenderer.textSize(t.string.isEmpty ? " " : t.string)
+        let size = AnnotationRenderer.textSize(t.string.isEmpty ? " " : t.string, level: textLevel)
         t.frame = NSRect(x: t.frame.minX, y: t.frame.maxY - size.height, width: max(size.width, 12) + 4, height: size.height)
     }
 
@@ -370,8 +397,8 @@ final class OverlayView: NSView, NSTextViewDelegate {
         field = nil
         let text = t.string.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty {
-            annotations.append(Annotation(tool: .text, points: [CGPoint(x: t.frame.minX, y: t.frame.maxY)],
-                                          color: t.textColor ?? color, text: text))
+            add(Annotation(tool: .text, points: [CGPoint(x: t.frame.minX, y: t.frame.maxY)],
+                           color: t.textColor ?? color, text: text, level: textLevel))
         }
         t.delegate = nil
         t.removeFromSuperview()
@@ -418,7 +445,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
         }
         let tools: [(String, String, Tool)] = [
             ("hand.raised", "Move", .move), ("rectangle", "Rect", .rect), ("circle", "Oval", .ellipse), ("line.diagonal", "Line", .line),
-            ("arrow.up.right", "Arrow", .arrow), ("pencil", "Pen", .pen),
+            ("arrow.up.right", "Arrow", .arrow), ("pencil", "Pen", .pen), ("highlighter", "Highlight", .highlighter),
             ("checkerboard.rectangle", "Mosaic", .mosaic), ("textformat", "Text", .text),
             ("1.circle", "Number", .number)]
         toolButtons = tools.map { btn($0.0, $0.1, #selector(pickTool(_:)), tag: $0.2.rawValue) }
@@ -430,8 +457,22 @@ final class OverlayView: NSView, NSTextViewDelegate {
         well.widthAnchor.constraint(equalToConstant: 28).isActive = true
         well.heightAnchor.constraint(equalToConstant: 28).isActive = true
 
-        let views: [NSView] = toolButtons + [well,
+        let sizePicker = NSSegmentedControl(labels: ["S", "M", "L"], trackingMode: .selectOne, target: self, action: #selector(pickSize(_:)))
+        sizePicker.selectedSegment = sizeLevel
+        sizePicker.controlSize = .small
+        sizeControl = sizePicker
+
+        let styleMenu = NSPopUpButton(frame: .zero, pullsDown: false)
+        styleMenu.addItems(withTitles: ["Solid", "Dashed", "Filled"])
+        styleMenu.selectItem(at: style)
+        styleMenu.controlSize = .small
+        styleMenu.target = self
+        styleMenu.action = #selector(pickStyle(_:))
+        styleControl = styleMenu
+
+        let views: [NSView] = toolButtons + [well, sizePicker, styleMenu,
             btn("arrow.uturn.backward", "Undo", #selector(undoAction)),
+            btn("arrow.uturn.forward", "Redo", #selector(redoAction)),
             btn("xmark", "Close", #selector(closeAction)),
             btn("arrow.down.to.line", "Save", #selector(saveAction)),
             btn("checkmark", "Copy", #selector(copyAction))]
@@ -469,12 +510,54 @@ final class OverlayView: NSView, NSTextViewDelegate {
     @objc func pickTool(_ b: NSButton) { commitText(); tool = Tool(rawValue: b.tag) ?? .rect; refreshTools() }
     @objc func pickColor(_ w: NSColorWell) { color = w.color }
     @objc func undoAction() { undo() }
+    @objc func redoAction() { redo() }
+
+    /// Sets the size for what you draw next, and changes the selected annotation too if there is one.
+    @objc func pickSize(_ c: NSSegmentedControl) {
+        sizeLevel = c.selectedSegment
+        if let i = selected, annotations.indices.contains(i) { annotations[i].level = sizeLevel; syncChrome() }
+    }
+
+    @objc func pickStyle(_ p: NSPopUpButton) {
+        style = p.indexOfSelectedItem
+        if let i = selected, annotations.indices.contains(i) { annotations[i].style = style; syncChrome() }
+    }
     @objc func closeAction() { onClose() }
     @objc func saveAction() { saveToFile(); onClose() }
     @objc func copyAction() { copyAndClose() }
 
+    /// Adds a finished annotation. Drawing something new ends the redo history.
+    func add(_ a: Annotation) {
+        annotations.append(a)
+        redoStack = []
+    }
+
     func undo() {
-        if !annotations.isEmpty { annotations.removeLast(); selected = nil; syncChrome() }
+        guard let last = annotations.popLast() else { return }
+        redoStack.append(last)
+        selected = nil
+        syncChrome()
+    }
+
+    func redo() {
+        guard let a = redoStack.popLast() else { return }
+        annotations.append(a)
+        syncChrome()
+    }
+
+    /// Arrow keys: nudge the selected annotation, or the selection itself when no annotation is selected.
+    func nudge(dx: CGFloat, dy: CGFloat) {
+        if let i = selected, annotations.indices.contains(i) {
+            annotations[i].points = annotations[i].points.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
+        } else if editing, var r = sel {
+            r.origin.x = min(max(r.origin.x + dx, 0), bounds.width - r.width)
+            r.origin.y = min(max(r.origin.y + dy, 0), bounds.height - r.height)
+            sel = r
+            placeToolbar()
+        } else {
+            return
+        }
+        syncChrome()
     }
 
     // MARK: output
