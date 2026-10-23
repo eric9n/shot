@@ -50,8 +50,8 @@ func freeze(_ mode: Mode) {
         task.arguments = ["-x", "-D", "\(idx + 1)", tmp.path]
         task.terminationHandler = { t in
             DispatchQueue.main.async {
-                // Decode straight to the target size so a full-resolution bitmap is never held in memory.
-                // Retina by default; 1 pixel per point (smaller, softer) is opt-in in Settings.
+                // Decode once, at the size the overlay shows: Retina by default, or 1 pixel per point (smaller, softer)
+                // when chosen in Settings.
                 let screen = screens[idx]
                 let scale: CGFloat = keepRetina ? screen.backingScaleFactor : 1
                 let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,

@@ -7,7 +7,6 @@ enum Countdown {
     static let escapeID: UInt32 = 98
     static let digitBase: UInt32 = 200           // hotkey ids 200...209 are the digits 0...9
     static var active: Bool { timer != nil }
-    static var digitKeysRegistered: Int { digitRefs.count }
 
     // Main keyboard digits 0...9, then the keypad's.
     private static let digitKeyCodes: [Int] = [

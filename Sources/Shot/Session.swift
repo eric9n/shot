@@ -59,7 +59,7 @@ enum Session {
         }
     }
 
-    /// True while a countdown or overlay would collide with a new capture.
+    /// True while a capture child is still freezing the screen or showing its overlay.
     static var isCapturing: Bool { capturing != nil }
     /// Children that only show pins now.
     static var hasPins: Bool { children.contains { $0 !== capturing } }

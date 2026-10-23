@@ -109,8 +109,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
     }
     override func cursorUpdate(with e: NSEvent) { updateCursor(at: convert(e.locationInWindow, from: nil)) }
 
-    /// Shrinks the screenshot to one pixel per block. Done before the layer takes the image: reading the pixels
-    /// again later makes the system rebuild a full-size copy.
+    /// Shrinks the screenshot to one pixel per block, once per capture, so drawing a mosaic is just stretching this map.
     static func makeMosaicMap(cg: CGImage, size: NSSize) -> NSBitmapImageRep {
         let cols = Int(ceil(size.width / AnnotationRenderer.mosaicBlock)), rows = Int(ceil(size.height / AnnotationRenderer.mosaicBlock))
         let map = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: cols, pixelsHigh: rows, bitsPerSample: 8, samplesPerPixel: 4,
@@ -298,7 +297,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
             pinAction()
         case 51, 117:
             if let i = selected, annotations.indices.contains(i) { annotations.remove(at: i); selected = nil; syncChrome() }
-        case 123, 124, 125, 126 where editing:   // ← → ↓ ↑ ; ⇧ moves 10 points instead of 1
+        case 123...126 where editing:   // ← → ↓ ↑ ; ⇧ moves 10 points instead of 1
             let step: CGFloat = e.modifierFlags.contains(.shift) ? 10 : 1
             nudge(dx: e.keyCode == 123 ? -step : e.keyCode == 124 ? step : 0, dy: e.keyCode == 125 ? -step : e.keyCode == 126 ? step : 0)
         default:

@@ -25,9 +25,9 @@ final class PinView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     /// Shows a screenshot.
-    func set(_ bmp: NSBitmapImageRep?) {
-        cg = bmp?.cgImage
-        baseSize = bmp?.size ?? .zero
+    func set(_ bmp: NSBitmapImageRep) {
+        cg = bmp.cgImage
+        baseSize = bmp.size
         layer?.contents = cg
         layer?.contentsGravity = .resize
     }

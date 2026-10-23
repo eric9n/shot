@@ -41,8 +41,8 @@ final class Backdrop: NSView {
         layer?.contentsGravity = .resize
     }
 
-    /// Points the layer at a screenshot, or at nothing (nil) to release it.
-    func setImage(_ image: CGImage?) {
+    /// Points the layer at the screenshot.
+    func setImage(_ image: CGImage) {
         cg = image
         layer?.contents = image
         layer?.contentsGravity = .resize
