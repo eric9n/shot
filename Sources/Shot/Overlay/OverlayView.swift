@@ -2,7 +2,6 @@ import AppKit
 
 /// Full-screen frozen-screenshot overlay: drag to select, annotate in place.
 final class OverlayView: NSView, NSTextViewDelegate {
-    var image = NSImage(size: .zero)
     var sel: NSRect?
     var editing = false
     var dragStart: CGPoint?
@@ -33,11 +32,9 @@ final class OverlayView: NSView, NSTextViewDelegate {
     var pixelsWide = 1   // real pixel width of the screenshot (NSImage reports it unreliably)
 
     let backdrop: Backdrop
-    var mosaicMap = OverlayView.blankMap   // whole screen at one pixel per mosaic block, built per capture
+    var mosaicMap: NSBitmapImageRep?       // whole screen at one pixel per mosaic block
     var annoView: AnnotationView!
 
-    /// AppKit in this OS keeps every NSView it ever created alive (a notification observer retains it), and a view
-    /// holds its screenshot. So there is exactly one OverlayView; each capture loads into it and `end()` empties it.
     init(frame: NSRect, scale: CGFloat) {
         backdrop = Backdrop(frame: NSRect(origin: .zero, size: frame.size), scale: scale)
         super.init(frame: frame)
@@ -48,50 +45,13 @@ final class OverlayView: NSView, NSTextViewDelegate {
         addSubview(annoView)
     }
 
-    static let blankMap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1, bitsPerSample: 8, samplesPerPixel: 4,
-                                           hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-
-    /// Starts a capture session in this (reused) view.
+    /// Loads the screenshot.
     func begin(cg: CGImage, size: NSSize, windows: [NSRect]) {
-        setFrameSize(size)
-        backdrop.frame = NSRect(origin: .zero, size: size)
         mosaicMap = OverlayView.makeMosaicMap(cg: cg, size: size)
-        image = NSImage(cgImage: cg, size: size)   // wraps the same CGImage, no copy
         pixelsWide = cg.width
         backdrop.setImage(cg)
-        reset()
         windowRects = windows
         syncChrome()
-    }
-
-    /// Ends the session and lets go of the screenshot.
-    func end() {
-        commitText()
-        backdrop.setImage(nil)
-        image = NSImage(size: .zero)
-        mosaicMap = OverlayView.blankMap
-        pixelsWide = 1
-        reset()
-        toolbar?.isHidden = true
-        annoView.isHidden = true
-    }
-
-    private func reset() {
-        sel = nil
-        editing = false
-        dragStart = nil
-        annotations = []
-        redoStack = []
-        current = nil
-        tool = .rect
-        selected = nil
-        dragLast = nil
-        moveLast = nil
-        resizing = nil
-        hover = nil
-        windowRects = []
-        field?.removeFromSuperview()
-        field = nil
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -420,13 +380,6 @@ final class OverlayView: NSView, NSTextViewDelegate {
     func beginEditing() {
         editing = true
         tool = .move   // after framing, the first thing you usually want is to nudge the selection
-        if let tb = toolbar {   // built once, reused by later captures
-            tb.isHidden = false
-            placeToolbar()
-            refreshTools()
-            syncChrome()
-            return
-        }
         let tb = NSView()
         tb.wantsLayer = true
         tb.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
@@ -598,19 +551,24 @@ final class OverlayView: NSView, NSTextViewDelegate {
 
     func rendered() -> NSBitmapImageRep? {
         commitText()
-        guard let s = sel,
+        guard let s = sel, let cg = backdrop.cg,
               let bmp = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(s.width * pixelScale), pixelsHigh: Int(s.height * pixelScale),
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
         else { return nil }
         lastRegion = s   // remembered for "Repeat Last Region"
         bmp.size = s.size
+        // Draw only the selected pixels (cropping shares the screenshot's memory) instead of the whole screen clipped
+        // to the selection; this keeps the short peak during export a few MB lower.
+        let sx = CGFloat(cg.width) / bounds.width, sy = CGFloat(cg.height) / bounds.height
+        let crop = CGRect(x: s.minX * sx, y: (bounds.height - s.maxY) * sy, width: s.width * sx, height: s.height * sy).integral
         NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bmp)
+        let ctx = NSGraphicsContext(bitmapImageRep: bmp)
+        NSGraphicsContext.current = ctx
+        if let part = cg.cropping(to: crop) { ctx?.cgContext.draw(part, in: CGRect(origin: .zero, size: s.size)) }
         let t = NSAffineTransform()
         t.translateX(by: -s.minX, yBy: -s.minY)
         t.concat()
-        image.draw(in: bounds)
         annotations.forEach { renderAnnotation($0) }
         NSGraphicsContext.restoreGraphicsState()
         return bmp

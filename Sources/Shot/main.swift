@@ -50,7 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// "Close All Pins" is only available while something is pinned.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        item.action == #selector(closePins) ? !Pins.active.isEmpty : true
+        item.action == #selector(closePins) ? Session.hasPins : true
     }
 
     /// Launching Shot again (Finder, Spotlight, Dock) reopens Settings, the way back when the icon is hidden.
@@ -64,11 +64,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func full() { capture(.fullscreen) }
     @objc func repeatLast() { capture(.repeatLast) }
     @objc func delayedDefault() { capture(.delayed) }
-    @objc func delayed(_ item: NSMenuItem) { Countdown.start(seconds: item.tag) { freeze(.repeatLast) } }
-    @objc func closePins() { Pins.closeAll() }
+    @objc func delayed(_ item: NSMenuItem) { Countdown.start(seconds: item.tag) { Session.start(.repeatLast) } }
+    @objc func closePins() { Session.closeAllPins() }
     @objc func openFolder() { NSWorkspace.shared.open(saveDir) }
     @objc func editShortcuts() { SettingsWindow.show { [self] in buildMenu() } }
 }
+
+Session.runChildIfRequested()   // a capture child runs its capture and exits here
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)

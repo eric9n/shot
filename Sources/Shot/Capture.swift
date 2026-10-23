@@ -8,10 +8,10 @@ func capture(_ mode: Mode) {
     if mode == .delayed {
         // The shortcut starts a countdown with the default delay; pressing it again cancels the countdown.
         // When it ends the screen freezes with the last region already selected (plain selection if there is none yet).
-        if Countdown.active { Countdown.cancel() } else { Countdown.start(seconds: delaySeconds) { freeze(.repeatLast) } }
+        if Countdown.active { Countdown.cancel() } else { Countdown.start(seconds: delaySeconds) { Session.start(.repeatLast) } }
         return
     }
-    freeze(mode)
+    Session.start(mode)
 }
 
 /// On-screen app windows on `screen`, front to back, in the overlay's coordinates (origin bottom-left of the screen).
@@ -34,9 +34,9 @@ func windowRects(on screen: NSScreen) -> [NSRect] {
     return out
 }
 
-/// Grabs the display under the cursor, then shows it frozen in the selection overlay.
+/// Capture child: grabs the display under the cursor, then shows it frozen in the selection overlay.
+/// If anything fails there is nothing to show, so the child just exits.
 func freeze(_ mode: Mode) {
-    guard Overlay.window == nil else { return }
     let mouse = NSEvent.mouseLocation
     let screens = NSScreen.screens
     let idx = screens.firstIndex { NSMouseInRect(mouse, $0.frame, false) } ?? 0
@@ -50,7 +50,6 @@ func freeze(_ mode: Mode) {
         task.arguments = ["-x", "-D", "\(idx + 1)", tmp.path]
         task.terminationHandler = { t in
             DispatchQueue.main.async {
-                defer { try? FileManager.default.removeItem(at: tmp) }
                 // Decode straight to the target size so a full-resolution bitmap is never held in memory.
                 // Retina by default; 1 pixel per point (smaller, softer) is opt-in in Settings.
                 let screen = screens[idx]
@@ -59,12 +58,13 @@ func freeze(_ mode: Mode) {
                                              kCGImageSourceShouldCacheImmediately: true,
                                              kCGImageSourceCreateThumbnailWithTransform: true,
                                              kCGImageSourceThumbnailMaxPixelSize: max(screen.frame.width, screen.frame.height) * scale]
-                guard let src = CGImageSourceCreateWithURL(tmp as CFURL, nil),
-                      let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return }
+                let cg = CGImageSourceCreateWithURL(tmp as CFURL, nil).flatMap { CGImageSourceCreateThumbnailAtIndex($0, 0, opts as CFDictionary) }
+                try? FileManager.default.removeItem(at: tmp)
+                guard let cg = cg else { exit(1) }
                 Overlay.show(cg: cg, screen: screen, fullSelection: mode == .fullscreen, windows: windows,
                              preselect: mode == .repeatLast ? lastRegion : nil)
             }
         }
-        try? task.run()
+        do { try task.run() } catch { exit(1) }
     }
 }

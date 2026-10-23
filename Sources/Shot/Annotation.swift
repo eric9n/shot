@@ -48,12 +48,26 @@ enum AnnotationRenderer {
         }
     }
 
-    static func textSize(_ text: String, level: Int) -> NSSize { TextLayout(text, level: level).size }
+    /// Measured sizes, so hit-testing on every mouse move and every redraw don't each build a whole TextKit stack.
+    private static let sizeCache: NSCache<NSString, NSValue> = {
+        let c = NSCache<NSString, NSValue>()
+        c.countLimit = 128
+        return c
+    }()
+
+    static func textSize(_ text: String, level: Int) -> NSSize {
+        let key = "\(level)\u{0}\(text)" as NSString
+        if let v = sizeCache.object(forKey: key) { return v.sizeValue }
+        let size = TextLayout(text, level: level).size
+        sizeCache.setObject(NSValue(size: size), forKey: key)
+        return size
+    }
 
     /// Text annotations are anchored at their top-left corner, which stays put as lines are added.
-    static func textBox(_ a: Annotation) -> NSRect {
-        let size = textSize(a.text, level: a.level)
-        return NSRect(x: a.points[0].x, y: a.points[0].y - size.height, width: size.width, height: size.height)
+    static func textBox(_ a: Annotation) -> NSRect { textBox(a, size: textSize(a.text, level: a.level)) }
+
+    private static func textBox(_ a: Annotation, size: NSSize) -> NSRect {
+        NSRect(x: a.points[0].x, y: a.points[0].y - size.height, width: size.width, height: size.height)
     }
 
     // MARK: drawing
@@ -150,7 +164,7 @@ enum AnnotationRenderer {
             (a.text as NSString).draw(at: CGPoint(x: c.x - size.width / 2, y: c.y - size.height / 2), withAttributes: attrs)
         case .text:
             let layout = TextLayout(a.text, color: a.color, level: a.level)
-            let box = textBox(a)
+            let box = textBox(a, size: layout.size)        // measured with the same stack that draws, no second one
             guard let cg = NSGraphicsContext.current?.cgContext else { return }
             cg.saveGState()
             cg.translateBy(x: box.minX, y: box.maxY)    // TextKit lays out top-down: put the origin at the top-left, y pointing down

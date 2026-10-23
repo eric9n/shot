@@ -2,10 +2,12 @@ import AppKit
 
 /// The picture inside a pinned window. Drag to move, scroll to zoom, double-click or Esc to close, right-click for more.
 final class PinView: NSView {
-    private(set) var bitmap: NSBitmapImageRep?
-    private var cg: CGImage?
+    private var cg: CGImage?                     // the only copy of the picture; a bitmap is made just for copy and save
     private var baseSize = NSSize.zero          // size when pinned; zoom is measured against it
     var onClose: () -> Void = {}
+    private static let normalBorder = NSColor.black.withAlphaComponent(0.25).cgColor   // keeps the edge visible over white pages
+    private var toast: NSView?                   // "Copied", shown briefly after a copy
+    private var hideToast: DispatchWorkItem?
 
     override var acceptsFirstResponder: Bool { true }
     override var wantsUpdateLayer: Bool { true }
@@ -18,23 +20,33 @@ final class PinView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor.black.withAlphaComponent(0.25).cgColor   // keeps the edge visible over white pages
+        layer?.borderColor = PinView.normalBorder
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    /// Shows a screenshot, or nothing (nil) to release it.
+    /// Shows a screenshot.
     func set(_ bmp: NSBitmapImageRep?) {
-        bitmap = bmp
         cg = bmp?.cgImage
         baseSize = bmp?.size ?? .zero
         layer?.contents = cg
         layer?.contentsGravity = .resize
     }
 
-    /// Scales the window around its center, clamped to 20%…500% of the pinned size.
+    /// A bitmap of the picture at its pinned size, for copy and save.
+    var bitmap: NSBitmapImageRep? {
+        guard let cg = cg else { return nil }
+        let b = NSBitmapImageRep(cgImage: cg)
+        b.size = baseSize
+        return b
+    }
+
+    /// Scales the window around its center, clamped to 20%…500% of the pinned size and never larger than the screen
+    /// (the window's surface grows with its area, so a 5x zoom of a big pin could take hundreds of MB).
     func zoom(factor: CGFloat) {
-        guard let w = window, baseSize.width > 0 else { return }
-        let width = min(max(w.frame.width * factor, baseSize.width * 0.2), baseSize.width * 5)
+        guard let w = window, baseSize.width > 0, baseSize.height > 0 else { return }
+        let screen = (w.screen ?? NSScreen.main)?.frame.size ?? NSSize(width: 100_000, height: 100_000)
+        let maxWidth = max(min(baseSize.width * 5, screen.width, screen.height * baseSize.width / baseSize.height), baseSize.width * 0.2)
+        let width = min(max(w.frame.width * factor, baseSize.width * 0.2), maxWidth)
         let height = width * baseSize.height / baseSize.width
         let c = CGPoint(x: w.frame.midX, y: w.frame.midY)
         w.setFrame(NSRect(x: c.x - width / 2, y: c.y - height / 2, width: width, height: height), display: true)
@@ -98,7 +110,51 @@ final class PinView: NSView {
         return m
     }
 
-    @objc func copyPin() { if let b = bitmap { copyToClipboard(b) } }
+    @objc func copyPin() {
+        guard let b = bitmap else { return }
+        copyToClipboard(b)
+        showCopied()
+    }
+
+    /// Confirms a copy: the border turns blue and "Copied" appears in the middle, then both fade back after a second.
+    private func showCopied() {
+        let box: NSView
+        if let t = toast { box = t } else {
+            let label = NSTextField(labelWithString: "Copied")
+            label.font = .systemFont(ofSize: 13, weight: .semibold)
+            label.textColor = .white
+            label.sizeToFit()
+            box = NSView(frame: NSRect(x: 0, y: 0, width: label.frame.width + 24, height: label.frame.height + 12))
+            box.wantsLayer = true
+            box.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.7).cgColor
+            box.layer?.cornerRadius = 8
+            label.setFrameOrigin(NSPoint(x: 12, y: 6))
+            box.addSubview(label)
+            addSubview(box)
+            toast = box
+        }
+        box.setFrameOrigin(NSPoint(x: (bounds.width - box.frame.width) / 2, y: (bounds.height - box.frame.height) / 2))
+        box.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]   // stays centered while zooming
+        box.alphaValue = 1
+        box.isHidden = false
+        layer?.borderColor = NSColor.systemBlue.cgColor
+        layer?.borderWidth = 3
+
+        hideToast?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.layer?.borderColor = PinView.normalBorder
+            self.layer?.borderWidth = 1
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.25
+                box.animator().alphaValue = 0
+            }, completionHandler: {
+                if box.alphaValue == 0 { box.isHidden = true }   // a newer copy may have shown it again
+            })
+        }
+        hideToast = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+    }
     @objc func savePin() { if let b = bitmap { Output.write(b) } }
     @objc func zoomIn() { zoom(factor: 1.25) }
     @objc func zoomOut() { zoom(factor: 0.8) }
@@ -125,17 +181,14 @@ final class PinWindow: NSWindow {
     }
 }
 
-/// All pinned screenshots. A closed pin gives up its image right away and its window is parked for the next pin
-/// to reuse, so pinning over and over doesn't keep creating windows.
+/// All pinned screenshots in this capture process. When the last one closes, the process exits.
 enum Pins {
     static var active: [PinWindow] = []
-    private static var idle: [PinWindow] = []
 
     /// Pins `bmp` as a floating window with the given frame (in screen coordinates).
     @discardableResult
     static func pin(_ bmp: NSBitmapImageRep, frame: NSRect) -> PinWindow {
-        let w = idle.popLast() ?? PinWindow()
-        w.alphaValue = 1
+        let w = PinWindow()
         w.setFrame(frame, display: false)
         w.pinView.set(bmp)
         active.append(w)
@@ -146,10 +199,9 @@ enum Pins {
 
     static func release(_ w: PinWindow) {
         guard active.contains(where: { $0 === w }) else { return }
-        w.pinView.set(nil)
-        w.orderOut(nil)
+        w.close()
         active.removeAll { $0 === w }
-        idle.append(w)
+        if active.isEmpty { Session.pinsClosed() }
     }
 
     static func closeAll() { active.forEach { release($0) } }

@@ -29,7 +29,19 @@
 cp -R Shot.app /Applications/
 ```
 
-首次截图时 macOS 会请求「屏幕录制」权限。因为是临时签名，每次重新构建后权限会失效，需要在系统设置里重新授权。
+首次截图时 macOS 会请求「屏幕录制」权限，授权后重新打开一次 Shot。
+
+macOS 按签名认 App。没有证书时 `build.sh` 用临时签名，每次重新构建签名都不同，系统会当成新 App 再要一次权限。只需做一次，就能让重新构建后权限保持有效：
+
+1. 打开「钥匙串访问」，菜单「钥匙串访问 → 证书助理 → 创建证书…」
+2. 名称填 `Shot Local`，身份类型选「自签名根证书」，证书类型选「代码签名」，点「创建」
+3. 重新运行 `./build.sh`，看到 `signed with "Shot Local"` 即可
+
+如果之前授权过临时签名的版本，先清掉旧记录再授权：
+
+```sh
+tccutil reset ScreenCapture local.shot
+```
 
 ## 项目结构
 
@@ -37,6 +49,7 @@ cp -R Shot.app /Applications/
 Sources/Shot/
   main.swift            程序入口、菜单栏图标和菜单
   Capture.swift         抓屏流程：冻结屏幕、检测窗口
+  Session.swift         每次截图的子进程：启动、通信、退出
   Countdown.swift       延时截图的倒计时
   Pin/PinWindow.swift   贴图窗口与管理
   Annotation.swift      标注的数据模型、绘制与点击检测
@@ -52,7 +65,6 @@ Sources/Shot/
   Clipboard.swift       复制到剪贴板与自动清除
   Output.swift          保存格式、文件名模板、不重名
 icon/                   图标脚本与图标素材
-tools/leak-check.sh     内存回归测试
 build.sh                构建并签名 Shot.app
 ```
 
@@ -60,15 +72,7 @@ build.sh                构建并签名 Shot.app
 
 - 抓屏使用系统自带的 `/usr/sbin/screencapture`（只用来抓一张整屏图，选区、窗口检测与标注都是 Shot 自己做的）。
 - 图标由 `icon/make-icon.swift` 绘制，`build.sh` 会调用它并用 `iconutil` 合成 `.icns`。`icon/` 里还有浅色/深色预览和分层素材。
-- 覆盖层的窗口和视图全程只创建一个，每次截图往里装图、关闭时释放。原因是这个系统版本的 AppKit 会让创建过的视图一直保持可达，每次新建都会把整屏截图留在内存里（约 22 MB/次）。
-
-## 测试
-
-`tools/leak-check.sh` 把「框选、拉伸、标注、导出、关闭」整套流程重复 40 次，检查内存有没有持续增长（限额 6 MB）。改动覆盖层相关代码后建议运行一次，需要图形界面的登录会话。
-
-```sh
-./tools/leak-check.sh        # 默认 40 轮；也可以传入轮数
-```
+- 每次截图都在一个独立的子进程里完成：菜单栏常驻进程用参数 `--capture` 启动自己的另一份，子进程冻结屏幕、显示覆盖层，关闭后退出（有贴图时等最后一张贴图关闭再退出），截图占用的内存随进程退出全部还给系统，常驻进程不持有任何截图。剪贴板自动清除的计时由常驻进程负责。
 
 ## 许可证
 

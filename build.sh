@@ -23,5 +23,15 @@ cat > $APP/Contents/Info.plist <<PL
 <key>LSUIElement</key><true/>
 </dict></plist>
 PL
-codesign --force --sign - $APP
-echo "Built $APP"
+# Sign with a fixed certificate if there is one, so macOS keeps the Screen Recording permission across rebuilds.
+# An ad-hoc signature changes with every build, and macOS then treats each build as a new app and asks again.
+# Create the certificate once in Keychain Access (see README), or set SHOT_SIGN_ID to another identity's name.
+SIGN_ID="${SHOT_SIGN_ID:-Shot Local}"
+if security find-identity -p codesigning | grep -q "\"$SIGN_ID\""; then
+    codesign --force --sign "$SIGN_ID" $APP
+    echo "Built $APP (signed with \"$SIGN_ID\")"
+else
+    codesign --force --sign - $APP
+    echo "Built $APP (ad-hoc signed: macOS will ask for Screen Recording again after every rebuild;"
+    echo "create a \"$SIGN_ID\" code-signing certificate to stop that, see README)"
+fi

@@ -24,7 +24,7 @@ enum Countdown {
     private static var escRef: EventHotKeyRef?
 
     static func start(seconds: Int, then action: @escaping () -> Void) {
-        guard Overlay.window == nil, !active, seconds > 0 else { return }
+        guard !Session.isCapturing, !active, seconds > 0 else { return }
         self.action = action
         remaining = seconds
         digits.stringValue = "\(remaining)"

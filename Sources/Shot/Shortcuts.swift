@@ -51,9 +51,8 @@ enum Shortcuts {
         return UInt32(m)
     }
 
-    /// (Re)registers all global hotkeys. Returns the modes the system refused (already taken elsewhere).
-    @discardableResult
-    static func register() -> [Mode] {
+    /// Installs the one handler all of Shot's hotkeys go through (the capture child needs it for the overlay's Esc).
+    static func installHandler() {
         if !installed {
             installed = true
             var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
@@ -70,6 +69,12 @@ enum Shortcuts {
                 return noErr
             }, 1, &spec, nil, nil)
         }
+    }
+
+    /// (Re)registers all global hotkeys. Returns the modes the system refused (already taken elsewhere).
+    @discardableResult
+    static func register() -> [Mode] {
+        installHandler()
         refs.forEach { UnregisterEventHotKey($0) }
         refs = []
         var failed: [Mode] = []
