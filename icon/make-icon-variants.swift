@@ -1,5 +1,5 @@
 // Renders light/dark Shot icon previews and Icon Composer layers (1024px PNGs).
-// Usage: swift make-icon-variants.swift <output-dir>
+// Usage: swift icon/make-icon-variants.swift <output-dir>
 import AppKit
 
 let coral = NSColor(red: 1.0, green: 0.353, blue: 0.306, alpha: 1)   // #FF5A4E

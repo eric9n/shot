@@ -23,10 +23,40 @@ cp -R Shot.app /Applications/
 
 首次截图时 macOS 会请求「屏幕录制」权限。因为是临时签名，每次重新构建后权限会失效，需要在系统设置里重新授权。
 
+## 项目结构
+
+```
+Sources/Shot/
+  main.swift            程序入口、菜单栏图标和菜单
+  Capture.swift         抓屏流程：冻结屏幕、检测窗口
+  Annotation.swift      标注的数据模型、绘制与点击检测
+  Overlay/
+    Overlay.swift       覆盖层窗口的创建、复用与关闭
+    OverlayView.swift   框选、移动与拉伸选区、标注、工具栏
+    OverlayLayers.swift 截图图层与标注图层
+    Handle.swift        选区四角和四边的手柄
+  Shortcuts.swift       全局快捷键的保存与注册
+  SettingsWindow.swift  设置窗口
+  Preferences.swift     保存目录、Retina 等设置项
+  Clipboard.swift       复制到剪贴板与自动清除
+icon/                   图标脚本与图标素材
+tools/leak-check.sh     内存回归测试
+build.sh                构建并签名 Shot.app
+```
+
 ## 实现说明
 
 - 抓屏使用系统自带的 `/usr/sbin/screencapture`（只用来抓一张整屏图，选区、窗口检测与标注都是 Shot 自己做的）。
-- 图标由 `make-icon.swift` 绘制，`build.sh` 会调用它并用 `iconutil` 合成 `.icns`。`icon/` 里是浅色/深色预览和分层素材。
+- 图标由 `icon/make-icon.swift` 绘制，`build.sh` 会调用它并用 `iconutil` 合成 `.icns`。`icon/` 里还有浅色/深色预览和分层素材。
+- 覆盖层的窗口和视图全程只创建一个，每次截图往里装图、关闭时释放。原因是这个系统版本的 AppKit 会让创建过的视图一直保持可达，每次新建都会把整屏截图留在内存里（约 22 MB/次）。
+
+## 测试
+
+`tools/leak-check.sh` 把「框选、拉伸、标注、导出、关闭」整套流程重复 40 次，检查内存有没有持续增长（限额 6 MB）。改动覆盖层相关代码后建议运行一次，需要图形界面的登录会话。
+
+```sh
+./tools/leak-check.sh        # 默认 40 轮；也可以传入轮数
+```
 
 ## 许可证
 
