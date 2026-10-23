@@ -648,7 +648,6 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     func copyAndClose() {
         if let bmp = rendered() {
             copyToClipboard(bmp)
-            NSSound(named: "Pop")?.play()
         }
         onClose()
     }
