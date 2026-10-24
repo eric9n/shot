@@ -5,10 +5,13 @@ import CryptoKit
 /// never stored twice: storing it again only moves the existing item to the front.
 struct StackItem: Codable, Equatable {
     enum Kind: String, Codable { case image, text, link }
+    /// A colored tag, like a traffic light.
+    enum Tag: String, Codable, CaseIterable { case red, yellow, green }
     let id: String
     let kind: Kind
     var created: Date
     var frame: CGRect       // where the pin was on screen (points), so it can be put back there
+    var tag: Tag? = nil     // set by the user; stays with the content if it is stored again
 }
 
 /// The stack's contents on disk, shared by every Shot process (pins write, the stack window reads). One folder per item
@@ -53,7 +56,9 @@ enum StackStore {
     private static func add(id: String, kind: StackItem.Kind, file: String, content: Data, frame: CGRect) -> StackItem? {
         let fm = FileManager.default
         let folder = dir.appendingPathComponent(id, isDirectory: true)
-        let item = StackItem(id: id, kind: kind, created: Date(), frame: frame)
+        // The same content stored again keeps the tag it already had.
+        let previous = (try? Data(contentsOf: folder.appendingPathComponent("meta.json"))).flatMap { try? JSONDecoder().decode(StackItem.self, from: $0) }
+        let item = StackItem(id: id, kind: kind, created: Date(), frame: frame, tag: previous?.tag)
         do {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
             let contentURL = folder.appendingPathComponent(file)
@@ -92,6 +97,16 @@ enum StackStore {
     }
 
     static func item(id: String) -> StackItem? { items().first { $0.id == id } }
+
+    /// Sets or clears an item's tag. Returns the updated item, or nil if it is gone.
+    @discardableResult
+    static func setTag(_ tag: StackItem.Tag?, for id: String) -> StackItem? {
+        let metaURL = dir.appendingPathComponent(id).appendingPathComponent("meta.json")
+        guard var item = (try? Data(contentsOf: metaURL)).flatMap({ try? JSONDecoder().decode(StackItem.self, from: $0) }) else { return nil }
+        item.tag = tag
+        guard let data = try? JSONEncoder().encode(item), (try? data.write(to: metaURL, options: .atomic)) != nil else { return nil }
+        return item
+    }
 
     // MARK: removing
 

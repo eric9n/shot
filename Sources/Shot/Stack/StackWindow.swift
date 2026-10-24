@@ -3,18 +3,23 @@ import ImageIO
 
 private let cardWidth: CGFloat = 232
 private let cardHeight: CGFloat = 132
-private let stripHeight: CGFloat = 38          // how much of a card shows while it is stacked under the next one
+private let stripHeight: CGFloat = 46          // how much of a card shows while it is stacked under the next one
+private let padHeight: CGFloat = 20            // the band along a card's top that takes its color tag
 private let shadowRoom: CGFloat = 26           // space around the cards for their shadows: enough for the shadow to fade out
                                                 // completely, or the window's edge cuts it off in a straight line
 private let cardRadius: CGFloat = 14
 
 // MARK: one card
 
-/// One stored item, drawn as a card. Click copies it, dragging takes it into another app, and the two buttons that
-/// show on hover put it back on the screen as a pin or remove it.
+/// One stored item, drawn as a card with a pad along its top that takes a color tag (three dots on the pad, shown on hover,
+/// set it). Click copies the card, dragging takes it into another app, and the two buttons that show on hover put it back
+/// on the screen as a pin or remove it.
 final class StackCell: NSView, NSDraggingSource {
-    let item: StackItem
+    private(set) var item: StackItem
     private let onChange: () -> Void
+    private let onTagged: (StackItem) -> Void       // the card was tagged or untagged; the stack must not rebuild because of it
+    private let pad = CAGradientLayer()
+    private let tagPicker = TagPicker()
     private let onAction: (TimeInterval) -> Void   // after a click or a button: the stack closes after this many seconds
     private let clip = NSView()                  // clips the content to the rounded corners; the shadow is on the card itself
     private let pinButton = RoundButton(symbol: "pin.fill", tip: "Pin it back on the screen", diameter: 22)
@@ -24,9 +29,11 @@ final class StackCell: NSView, NSDraggingSource {
     private var hideToast: DispatchWorkItem?
     private var toast: NSView?
 
-    init(item: StackItem, onChange: @escaping () -> Void, onAction: @escaping (TimeInterval) -> Void) {
+    init(item: StackItem, onChange: @escaping () -> Void, onTagged: @escaping (StackItem) -> Void = { _ in },
+         onAction: @escaping (TimeInterval) -> Void) {
         self.item = item
         self.onChange = onChange
+        self.onTagged = onTagged
         self.onAction = onAction
         super.init(frame: NSRect(x: 0, y: 0, width: cardWidth, height: cardHeight))
         wantsLayer = true
@@ -46,14 +53,21 @@ final class StackCell: NSView, NSDraggingSource {
         clip.layer?.borderColor = Warm.hairline.cgColor
         addSubview(clip)
         buildContent()
+        buildPad()
 
         pinButton.target = self
         pinButton.action = #selector(pinBack)
         removeButton.target = self
         removeButton.action = #selector(remove)
-        pinButton.setFrameOrigin(NSPoint(x: cardWidth - 2 * 22 - 14, y: cardHeight - 22 - 8))
-        removeButton.setFrameOrigin(NSPoint(x: cardWidth - 22 - 8, y: cardHeight - 22 - 8))
+        pinButton.setFrameOrigin(NSPoint(x: cardWidth - 2 * 22 - 14, y: cardHeight - padHeight - 22 - 5))
+        removeButton.setFrameOrigin(NSPoint(x: cardWidth - 22 - 8, y: cardHeight - padHeight - 22 - 5))
         for b in [pinButton, removeButton] { b.alphaValue = 0; addSubview(b) }
+
+        tagPicker.setFrameOrigin(NSPoint(x: 10 - TagPicker.ring, y: cardHeight - padHeight + (padHeight - TagPicker.size.height) / 2))
+        tagPicker.selected = item.tag
+        tagPicker.onPick = { [weak self] tag in self?.pick(tag) }
+        tagPicker.alphaValue = 0
+        addSubview(tagPicker)
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -66,10 +80,11 @@ final class StackCell: NSView, NSDraggingSource {
                                          kCGImageSourceThumbnailMaxPixelSize: 640]   // a thumbnail only; the full picture stays on disk
             if let src = CGImageSourceCreateWithURL(StackStore.contentURL(item) as CFURL, nil),
                let thumb = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary), thumb.width > 0, thumb.height > 0 {
-                let scale = max(cardWidth / CGFloat(thumb.width), cardHeight / CGFloat(thumb.height))     // fill the card
+                let area = cardHeight - padHeight                                                          // under the pad
+                let scale = max(cardWidth / CGFloat(thumb.width), area / CGFloat(thumb.height))            // fill it
                 let w = CGFloat(thumb.width) * scale, h = CGFloat(thumb.height) * scale
                 let picture = CALayer()
-                picture.frame = CGRect(x: (cardWidth - w) / 2, y: cardHeight - h, width: w, height: h)   // top aligned
+                picture.frame = CGRect(x: (cardWidth - w) / 2, y: area - h, width: w, height: h)           // top aligned
                 picture.contents = thumb
                 picture.contentsGravity = .resize
                 clip.layer?.addSublayer(picture)
@@ -87,10 +102,11 @@ final class StackCell: NSView, NSDraggingSource {
             label.cell?.truncatesLastVisibleLine = true
             label.isSelectable = false
             let left: CGFloat = isLink ? 36 : 14
-            label.frame = NSRect(x: left, y: 12, width: cardWidth - left - 14, height: cardHeight - 12 - 11)
+            let top = padHeight + 9
+            label.frame = NSRect(x: left, y: 12, width: cardWidth - left - 14, height: cardHeight - 12 - top)
             clip.addSubview(label)
             if isLink {
-                let icon = NSImageView(frame: NSRect(x: 14, y: cardHeight - 11 - 17, width: 18, height: 18))
+                let icon = NSImageView(frame: NSRect(x: 14, y: cardHeight - top - 17, width: 18, height: 18))
                 icon.image = NSImage(systemSymbolName: "link", accessibilityDescription: "Link")?
                     .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
                 icon.contentTintColor = Warm.link
@@ -99,23 +115,55 @@ final class StackCell: NSView, NSDraggingSource {
         }
     }
 
-    // Everything on the card is one surface for the mouse, except the two buttons while they are showing.
+    /// The pad along the top: empty before the card is tagged, filled with the tag's color after.
+    private func buildPad() {
+        pad.frame = CGRect(x: 0, y: cardHeight - padHeight, width: cardWidth, height: padHeight)
+        clip.layer?.addSublayer(pad)
+        let edge = CALayer()                                                       // a hairline under the pad
+        edge.frame = CGRect(x: 0, y: cardHeight - padHeight - 0.5, width: cardWidth, height: 0.5)
+        edge.backgroundColor = Warm.ink.withAlphaComponent(0.14).cgColor
+        clip.layer?.addSublayer(edge)
+        applyTag()
+    }
+
+    private func applyTag() {
+        let g = item.tag.map(Warm.tagGradient) ?? Warm.emptyPad
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pad.colors = [g.top.cgColor, g.bottom.cgColor]
+        pad.startPoint = CGPoint(x: 0.5, y: 1)
+        pad.endPoint = CGPoint(x: 0.5, y: 0)
+        CATransaction.commit()
+        tagPicker.selected = item.tag
+    }
+
+    /// A tag dot was clicked: set that color, or take the tag off if it was already set. Tagging does not close the stack, so
+    /// several cards can be tagged one after the other.
+    private func pick(_ tag: StackItem.Tag) {
+        guard let updated = StackStore.setTag(item.tag == tag ? nil : tag, for: item.id) else { return }
+        item = updated
+        applyTag()
+        onTagged(updated)
+    }
+
+    // Everything on the card is one surface for the mouse, except the buttons and the tag dots while they are showing.
     override func hitTest(_ point: NSPoint) -> NSView? {
         let p = convert(point, from: superview)
         guard bounds.contains(p) else { return nil }
         for b in [pinButton, removeButton] where b.alphaValue > 0.5 && b.frame.contains(p) { return b }
+        if tagPicker.alphaValue > 0.5, tagPicker.frame.insetBy(dx: -4, dy: 0).contains(p) { return tagPicker }
         return self
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    /// The card the pointer is on (as decided by the stack) shows its two buttons; the others hide them.
+    /// The card the pointer is on (as decided by the stack) shows its two buttons and the tag dots; the others hide them.
     func setFocused(_ focused: Bool) { setButtons(visible: focused) }
 
     private func setButtons(visible: Bool) {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
-            for b in [pinButton, removeButton] { b.animator().alphaValue = visible ? 1 : 0 }
+            for v in [pinButton, removeButton, tagPicker] as [NSView] { v.animator().alphaValue = visible ? 1 : 0 }
         }
     }
 
@@ -360,11 +408,18 @@ final class StackController {
         cells = items.reversed().map { item in
             StackCell(item: item,
                       onChange: { [weak self] in self?.reload(force: false) },
+                      onTagged: { [weak self] updated in self?.noteTagged(updated) },
                       onAction: { [weak self] delay in self?.close(after: delay) })
         }
         if cells.isEmpty { panel.contentView?.addSubview(emptyPill) }
         cells.forEach { panel.contentView?.addSubview($0) }       // later cards are in front
         layout(animated: false)
+    }
+
+    /// A card was tagged here: remember it as what is shown, so the next look at the folder sees nothing changed and the cards
+    /// are not rebuilt (which would fold the unfolded one back).
+    private func noteTagged(_ updated: StackItem) {
+        shown = shown.map { $0.id == updated.id ? updated : $0 }
     }
 
     /// The card under `p`, by where the cards are going to be: the one in front where they overlap.
