@@ -10,6 +10,14 @@ func copyToClipboard(_ bmp: NSBitmapImageRep) {
     Session.report("copied \(pb.changeCount)")
 }
 
+/// Puts plain text on the clipboard (recognized text).
+func copyTextToClipboard(_ text: String) {
+    let pb = NSPasteboard.general
+    pb.clearContents()
+    pb.setString(text, forType: .string)
+    Session.report("copied \(pb.changeCount)")
+}
+
 private var clipboardTimer: Timer?
 
 /// Menu-bar process: clears the clipboard after the chosen delay, unless something else has been copied since.

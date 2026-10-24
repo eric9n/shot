@@ -48,7 +48,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             rows.append(NSStackView(views: [label, b]))
         }
         // Keys that work while you annotate; the toolbar itself stays free of hints.
-        let keysHelp = NSTextField(labelWithString: "While annotating: Return copies, P pins, ⌘Z undoes, ⇧⌘Z redoes, arrow keys nudge (⇧ for 10 points), Delete removes the selected annotation, Esc closes.")
+        let keysHelp = NSTextField(labelWithString: "While annotating: Return copies, P pins, T copies the text in the selection, ⌘Z undoes, ⇧⌘Z redoes, arrow keys nudge (⇧ for 10 points), Delete removes the selected annotation, Esc closes.")
         keysHelp.font = .systemFont(ofSize: 11)
         keysHelp.textColor = .secondaryLabelColor
         keysHelp.maximumNumberOfLines = 4

@@ -295,6 +295,8 @@ final class OverlayView: NSView, NSTextViewDelegate {
         case 36 where editing: copyAndClose()
         case 35 where editing && e.modifierFlags.intersection([.command, .control, .option]).isEmpty:   // P: pin
             pinAction()
+        case 17 where editing && e.modifierFlags.intersection([.command, .control, .option]).isEmpty:   // T: copy text
+            ocrAction()
         case 51, 117:
             if let i = selected, annotations.indices.contains(i) { annotations.remove(at: i); selected = nil; syncChrome() }
         case 123...126 where editing:   // ← → ↓ ↑ ; ⇧ moves 10 points instead of 1
@@ -384,8 +386,9 @@ final class OverlayView: NSView, NSTextViewDelegate {
         tb.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         tb.layer?.cornerRadius = 10
 
-        func btn(_ symbol: String, _ fallback: String, _ sel: Selector, tag: Int = 0) -> NSButton {
+        func btn(_ symbol: String, _ fallback: String, _ sel: Selector, tag: Int = 0, tip: String? = nil) -> NSButton {
             let b = NSButton()
+            b.toolTip = tip
             if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: fallback) {
                 b.image = symbol == "hand.raised" ? OverlayView.mirrored(img) : img   // palm faces the other way
             } else { b.title = fallback }
@@ -451,6 +454,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
             btn("arrow.uturn.backward", "Undo", #selector(undoAction)),
             btn("arrow.uturn.forward", "Redo", #selector(redoAction)),
             btn("pin", "Pin", #selector(pinAction)),
+            btn("text.viewfinder", "Text", #selector(ocrAction), tip: "Copy the text in the selection (T)"),
             dragHandle,
             btn("xmark", "Close", #selector(closeAction)),
             btn("arrow.down.to.line", "Save", #selector(saveAction)),
@@ -548,9 +552,71 @@ final class OverlayView: NSView, NSTextViewDelegate {
 
     // MARK: output
 
+    /// The selected part of the screenshot, without annotations.
+    func selectionCrop() -> CGImage? {
+        guard let s = sel, let cg = backdrop.cg else { return nil }
+        let sx = CGFloat(cg.width) / bounds.width, sy = CGFloat(cg.height) / bounds.height
+        return cg.cropping(to: CGRect(x: s.minX * sx, y: (bounds.height - s.maxY) * sy, width: s.width * sx, height: s.height * sy).integral)
+    }
+
+    private var recognizing = false
+    private var statusBox: NSView?
+    private var statusLabel: NSTextField?
+    private var statusHide: DispatchWorkItem?
+
+    /// A small message in the middle of the selection ("Recognizing text…"). Stays until replaced, or hides itself after
+    /// `hideAfter` seconds.
+    func showStatus(_ text: String, hideAfter: TimeInterval? = nil) {
+        guard let s = sel else { return }
+        if statusBox == nil {
+            let label = NSTextField(labelWithString: "")
+            label.font = .systemFont(ofSize: 14, weight: .semibold)
+            label.textColor = .white
+            let box = NSView()
+            box.wantsLayer = true
+            box.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.78).cgColor
+            box.layer?.cornerRadius = 8
+            box.addSubview(label)
+            addSubview(box)
+            statusBox = box
+            statusLabel = label
+        }
+        guard let box = statusBox, let label = statusLabel else { return }
+        label.stringValue = text
+        label.sizeToFit()
+        label.setFrameOrigin(NSPoint(x: 14, y: 8))
+        box.frame = NSRect(x: 0, y: 0, width: label.frame.width + 28, height: label.frame.height + 16)
+        box.setFrameOrigin(NSPoint(x: s.midX - box.frame.width / 2, y: s.midY - box.frame.height / 2))
+        box.isHidden = false
+        statusHide?.cancel()
+        if let t = hideAfter {
+            let work = DispatchWorkItem { [weak self] in self?.statusBox?.isHidden = true }
+            statusHide = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + t, execute: work)
+        }
+    }
+
+    /// Reads the text in the selection (the screenshot itself, not the annotations), copies it, and closes.
+    /// The first use after a restart can take several seconds while the system prepares its text model, so a message
+    /// shows meanwhile. With no text found, the overlay stays so you can pick another area.
+    @objc func ocrAction() {
+        commitText()
+        guard !recognizing, let crop = selectionCrop() else { return }
+        recognizing = true
+        lastRegion = sel
+        showStatus("Recognizing text…")
+        Ocr.recognize(crop) { [weak self] text in
+            guard let self = self else { return }
+            self.recognizing = false
+            if text.isEmpty { self.showStatus("No text found", hideAfter: 1.5); return }
+            copyTextToClipboard(text)
+            self.onClose()
+        }
+    }
+
     func rendered() -> NSBitmapImageRep? {
         commitText()
-        guard let s = sel, let cg = backdrop.cg,
+        guard let s = sel,
               let bmp = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(s.width * pixelScale), pixelsHigh: Int(s.height * pixelScale),
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
@@ -559,12 +625,10 @@ final class OverlayView: NSView, NSTextViewDelegate {
         bmp.size = s.size
         // Draw only the selected pixels (cropping shares the screenshot's memory) instead of the whole screen clipped
         // to the selection; this keeps the short peak during export a few MB lower.
-        let sx = CGFloat(cg.width) / bounds.width, sy = CGFloat(cg.height) / bounds.height
-        let crop = CGRect(x: s.minX * sx, y: (bounds.height - s.maxY) * sy, width: s.width * sx, height: s.height * sy).integral
         NSGraphicsContext.saveGraphicsState()
         let ctx = NSGraphicsContext(bitmapImageRep: bmp)
         NSGraphicsContext.current = ctx
-        if let part = cg.cropping(to: crop) { ctx?.cgContext.draw(part, in: CGRect(origin: .zero, size: s.size)) }
+        if let part = selectionCrop() { ctx?.cgContext.draw(part, in: CGRect(origin: .zero, size: s.size)) }
         let t = NSAffineTransform()
         t.translateX(by: -s.minX, yBy: -s.minY)
         t.concat()
