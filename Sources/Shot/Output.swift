@@ -69,6 +69,15 @@ enum Output {
         return url
     }
 
+    /// Writes a picture to a temporary file, in the chosen format and name, to be dragged into another app. Earlier drag
+    /// files are removed first: they are no longer needed.
+    static func dragFile(_ bmp: NSBitmapImageRep) -> URL? {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Shot-drag", isDirectory: true)
+        try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return write(bmp, to: dir)
+    }
+
     /// Example of what the current settings produce, for the Settings window.
     static func example() -> String {
         "\(fileName(pattern: namePattern, counter: fileCounter)).\(saveFormat.rawValue)"

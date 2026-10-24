@@ -1,6 +1,6 @@
 import AppKit
 
-enum Tool: Int { case pen, rect, arrow, text, ellipse, line, mosaic, move, number, highlighter }
+enum Tool: Int { case pen, rect, arrow, text, ellipse, line, mosaic, move, number, highlighter, focus }
 
 struct Annotation {
     var tool: Tool
@@ -88,6 +88,31 @@ enum AnnotationRenderer {
         p.stroke()
     }
 
+    /// Draws all the annotations over `area` (the selection). The focus areas come first: everything in `area` outside them is
+    /// dimmed, once, so that two areas light up both, and the other annotations are drawn on top, undimmed.
+    static func renderAll(_ items: [Annotation], area: NSRect, mosaic: NSBitmapImageRep? = nil) {
+        let spots = items.filter { $0.tool == .focus && $0.points.count > 1 }.map { $0.bounds.intersection(area) }
+            .filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
+        if !spots.isEmpty { dim(area, except: spots) }
+        items.forEach { render($0, mosaic: mosaic) }
+    }
+
+    /// Dims `area` except where the spots are (together, they may overlap). The area is cut along the spots' edges into a grid;
+    /// the cells that lie in no spot make one path, filled in one go so that there are no seams between them.
+    private static func dim(_ area: NSRect, except spots: [NSRect]) {
+        let xs = Array(Set([area.minX, area.maxX] + spots.flatMap { [$0.minX, $0.maxX] })).sorted()
+        let ys = Array(Set([area.minY, area.maxY] + spots.flatMap { [$0.minY, $0.maxY] })).sorted()
+        let path = NSBezierPath()
+        for i in 0..<(xs.count - 1) {
+            for j in 0..<(ys.count - 1) {
+                let cell = NSRect(x: xs[i], y: ys[j], width: xs[i + 1] - xs[i], height: ys[j + 1] - ys[j])
+                if !spots.contains(where: { $0.contains(CGPoint(x: cell.midX, y: cell.midY)) }) { path.appendRect(cell) }
+            }
+        }
+        NSColor.black.withAlphaComponent(0.55).setFill()
+        path.fill()
+    }
+
     static func render(_ a: Annotation, mosaic: NSBitmapImageRep? = nil) {
         a.color.setStroke()
         switch a.tool {
@@ -112,6 +137,13 @@ enum AnnotationRenderer {
             strokeShape(NSBezierPath(rect: NSRect(x: min(s.x, e.x), y: min(s.y, e.y), width: abs(s.x - e.x), height: abs(s.y - e.y))), a)
         case .move:
             return
+        case .focus:
+            // Only the thin edge of the area: everything outside the focus areas is dimmed together, in renderAll.
+            guard let s = a.points.first, let e = a.points.last else { return }
+            let edge = NSBezierPath(rect: NSRect(x: min(s.x, e.x), y: min(s.y, e.y), width: abs(s.x - e.x), height: abs(s.y - e.y)))
+            edge.lineWidth = 1
+            NSColor.white.withAlphaComponent(0.9).setStroke()
+            edge.stroke()
         case .ellipse:
             guard let s = a.points.first, let e = a.points.last else { return }
             strokeShape(NSBezierPath(ovalIn: NSRect(x: min(s.x, e.x), y: min(s.y, e.y), width: abs(s.x - e.x), height: abs(s.y - e.y))), a)
@@ -203,9 +235,9 @@ extension Annotation {
             return false
         case .mosaic:
             return b.contains(p)
-        case .rect:
+        case .rect, .focus:
             let outer = b.insetBy(dx: -tol, dy: -tol)
-            if style == 2 { return outer.contains(p) }   // filled: the whole shape is grabbable
+            if tool == .rect, style == 2 { return outer.contains(p) }   // filled: the whole shape is grabbable (a focus area never is)
             return outer.contains(p) && !(b.width > 2 * tol && b.height > 2 * tol && b.insetBy(dx: tol, dy: tol).contains(p))
         case .ellipse:
             let a = b.width / 2, c = b.height / 2

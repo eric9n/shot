@@ -96,8 +96,7 @@ final class AnnotationView: NSView {
         let t = NSAffineTransform()
         t.translateX(by: -frame.minX, yBy: -frame.minY)   // annotations live in overlay coordinates
         t.concat()
-        owner.annotations.forEach { owner.renderAnnotation($0) }
-        if let c = owner.current { owner.renderAnnotation(c) }
+        if let area = owner.sel { owner.renderAll(in: area, includingCurrent: true) }
         if let i = owner.selected, owner.annotations.indices.contains(i) {
             let box = NSBezierPath(rect: owner.annotations[i].bounds.insetBy(dx: -5, dy: -5))
             box.lineWidth = 1

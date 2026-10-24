@@ -137,8 +137,9 @@ final class OverlayView: NSView, NSTextViewDelegate {
 
     // MARK: drawing
 
-    func renderAnnotation(_ a: Annotation) {
-        AnnotationRenderer.render(a, mosaic: mosaicMap)
+    /// Draws every annotation over `area` (the selection), the one being drawn too if asked.
+    func renderAll(in area: NSRect, includingCurrent: Bool) {
+        AnnotationRenderer.renderAll(annotations + (includingCurrent ? current.map { [$0] } ?? [] : []), area: area, mosaic: mosaicMap)
     }
 
     var pixelScale: CGFloat { CGFloat(pixelsWide) / bounds.width }
@@ -406,7 +407,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
         let tools: [(String, String, Tool)] = [
             ("hand.raised", "Move", .move), ("rectangle", "Rect", .rect), ("circle", "Oval", .ellipse), ("line.diagonal", "Line", .line),
             ("arrow.up.right", "Arrow", .arrow), ("pencil", "Pen", .pen), ("highlighter", "Highlight", .highlighter),
-            ("checkerboard.rectangle", "Mosaic", .mosaic), ("textformat", "Text", .text),
+            ("checkerboard.rectangle", "Mosaic", .mosaic), ("viewfinder.rectangular", "Focus", .focus), ("textformat", "Text", .text),
             ("1.circle", "Number", .number)]
         toolButtons = tools.map { btn($0.0, $0.1, #selector(pickTool(_:)), tag: $0.2.rawValue) }
 
@@ -660,7 +661,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
         let t = NSAffineTransform()
         t.translateX(by: -s.minX, yBy: -s.minY)
         t.concat()
-        annotations.forEach { renderAnnotation($0) }
+        renderAll(in: s, includingCurrent: false)
         NSGraphicsContext.restoreGraphicsState()
         return bmp
     }

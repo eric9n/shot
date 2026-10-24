@@ -272,10 +272,7 @@ final class StackCell: NSView, NSDraggingSource {
     /// A picture dragged into another app arrives as a file, in the chosen format and name (like the overlay's drag icon).
     private func dragFile() -> URL? {
         guard let data = try? Data(contentsOf: StackStore.contentURL(item)), let bmp = NSBitmapImageRep(data: data) else { return nil }
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("Shot-drag", isDirectory: true)
-        try? FileManager.default.removeItem(at: dir)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return Output.write(bmp, to: dir)
+        return Output.dragFile(bmp)
     }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }

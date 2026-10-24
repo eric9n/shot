@@ -33,5 +33,5 @@ if security find-identity -p codesigning | grep -q "\"$SIGN_ID\""; then
 else
     codesign --force --sign - $APP
     echo "Built $APP (ad-hoc signed: macOS will ask for Screen Recording again after every rebuild;"
-    echo "create a \"$SIGN_ID\" code-signing certificate to stop that, see README)"
+    echo "run ./make-signing-cert.sh once to stop that, see README)"
 fi

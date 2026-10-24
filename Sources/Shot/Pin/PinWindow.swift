@@ -1,7 +1,8 @@
 import AppKit
 
-/// The picture inside a pinned window. Drag to move, scroll to zoom, double-click or Esc to close, right-click for more.
-final class PinView: NSView {
+/// The picture inside a pinned window. Drag to move (hold Option and drag to take it into another app instead), scroll to
+/// zoom, double-click or Esc to close, right-click for more.
+final class PinView: NSView, NSDraggingSource {
     private var cg: CGImage?                     // the only copy of the picture; a bitmap is made just for copy and save
     private(set) var text: String?               // set instead of `cg` when the pin shows text
     private var label: NSTextField?
@@ -171,9 +172,54 @@ final class PinView: NSView {
     override func magnify(with e: NSEvent) { zoom(factor: 1 + e.magnification) }
     override func smartMagnify(with e: NSEvent) { resetZoom() }
 
+    // Hold Option and drag: the pin's content goes into another app (a picture as a file, text as text, a link as a link),
+    // and the pin stays where it is. Without Option, a drag moves the pin.
+    private var optionDownAt: NSPoint?
+    private(set) var dragOutStarted = false
+
     override func mouseDown(with e: NSEvent) {
-        if e.clickCount == 2 { onClose() } else { window?.performDrag(with: e) }
+        if e.clickCount == 2 { onClose(); return }
+        if e.modifierFlags.contains(.option) {
+            optionDownAt = e.locationInWindow
+            dragOutStarted = false
+            return
+        }
+        window?.performDrag(with: e)
     }
+
+    override func mouseDragged(with e: NSEvent) {
+        guard let start = optionDownAt, !dragOutStarted, hypot(e.locationInWindow.x - start.x, e.locationInWindow.y - start.y) > 4 else { return }
+        dragOutStarted = true
+        beginDragOut(with: e)
+    }
+
+    override func mouseUp(with e: NSEvent) { optionDownAt = nil }
+
+    /// What the pin gives to the app it is dropped on: a link as a link, other text as text, a picture as a file.
+    func dragWriter() -> NSPasteboardWriting? {
+        if let t = text {
+            if StackStore.isLink(t), let url = URL(string: t) { return url as NSURL }
+            return t as NSString
+        }
+        guard let bmp = bitmap, let url = Output.dragFile(bmp) else { return nil }
+        return url as NSURL
+    }
+
+    private func beginDragOut(with e: NSEvent) {
+        guard let writer = dragWriter() else { return }
+        let rep = bitmapImageRepForCachingDisplay(in: bounds)
+        if let rep = rep { cacheDisplay(in: bounds, to: rep) }
+        let shrink = min(1, 180 / max(bounds.width, bounds.height))                     // a small preview follows the pointer
+        let size = NSSize(width: bounds.width * shrink, height: bounds.height * shrink)
+        let preview = NSImage(size: size)
+        if let rep = rep { preview.addRepresentation(rep) }
+        let here = convert(e.locationInWindow, from: nil)
+        let item = NSDraggingItem(pasteboardWriter: writer)
+        item.setDraggingFrame(NSRect(x: here.x - size.width / 2, y: here.y - size.height / 2, width: size.width, height: size.height), contents: preview)
+        beginDraggingSession(with: [item], event: e, source: self)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
 
     override func keyDown(with e: NSEvent) {
         if e.keyCode == 53 { onClose() }                                                     // Esc
