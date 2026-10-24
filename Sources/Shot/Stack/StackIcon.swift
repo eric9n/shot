@@ -23,6 +23,18 @@ enum StackIcon {
 
     static func toggleVisible() { setVisible(!isEnabled) }
 
+    /// Stores what is on the clipboard (text, a link, or a picture) in the stack, without any dragging: for the shortcut,
+    /// the menu, and Option-click on the icon. The stack shows for a moment so you can see it went in; if there is nothing
+    /// it can take, there is a beep.
+    static func storeClipboard() {
+        let v = homeScreen.visibleFrame
+        if StackDrop.accepts(NSPasteboard.general), StackDrop.store(NSPasteboard.general, around: CGPoint(x: v.midX, y: v.midY)) > 0 {
+            Session.stackStored()
+        } else {
+            NSSound.beep()
+        }
+    }
+
     // Where the icon was left, as ["screen": display id, "dx": ..., "dy": ...]: dx and dy are how far the pouch's top right
     // corner is from the top right corner of that screen's usable area. Until it is dragged it sits just under the menu bar
     // in the corner of the main screen.
@@ -127,7 +139,7 @@ final class StackIconView: NSView {
     func update(count: Int, active: Bool) {
         self.count = count
         self.active = active
-        toolTip = count == 0 ? "Stack (empty)" : "Stack (\(count))"
+        toolTip = (count == 0 ? "Stack (empty)" : "Stack (\(count))") + "\nClick: open or close\nOption-click: store the clipboard"
         needsDisplay = true
     }
 
@@ -286,7 +298,8 @@ final class StackIconView: NSView {
         if dragged {
             NSCursor.pop()
         } else if bounds.contains(convert(event.locationInWindow, from: nil)) {
-            Session.toggleStack()
+            // Option-click stores the clipboard (no dragging needed); a plain click opens or closes the stack.
+            if event.modifierFlags.contains(.option) { StackIcon.storeClipboard() } else { Session.toggleStack() }
         }
         grab = nil
         dragged = false

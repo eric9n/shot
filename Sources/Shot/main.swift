@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         delayItem.submenu = delays
         menu.addItem(delayItem)
         add("Show / Hide Stack Icon" + sc(.stack), #selector(toggleStackIcon))
+        add("Store Clipboard in Stack" + sc(.storeClipboard), #selector(storeClipboard))
         add("Pin from Clipboard", #selector(pinClipboard))
         add("Close All Pins", #selector(closePins))
         menu.addItem(.separator())
@@ -57,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         switch item.action {
         case #selector(closePins): return Session.hasPins
         case #selector(pinClipboard): return Session.clipboardCanPin
+        case #selector(storeClipboard): return StackDrop.accepts(NSPasteboard.general)
         default: return true
         }
     }
@@ -76,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func delayedDefault() { capture(.delayed) }
     @objc func delayed(_ item: NSMenuItem) { Countdown.start(seconds: item.tag) { Session.start(.repeatLast) } }
     @objc func toggleStackIcon() { StackIcon.toggleVisible() }
+    @objc func storeClipboard() { StackIcon.storeClipboard() }
     @objc func pinClipboard() { Session.pinClipboard() }
     @objc func closePins() { Session.closeAllPins() }
     @objc func openFolder() { NSWorkspace.shared.open(saveDir) }
