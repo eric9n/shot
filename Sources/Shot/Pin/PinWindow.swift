@@ -228,7 +228,7 @@ final class PinView: NSView {
             label.sizeToFit()
             box = NSView(frame: NSRect(x: 0, y: 0, width: label.frame.width + 24, height: label.frame.height + 12))
             box.wantsLayer = true
-            box.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
+            box.layer?.backgroundColor = Warm.ink.withAlphaComponent(0.78).cgColor
             box.layer?.cornerRadius = box.frame.height / 2      // a capsule
             label.setFrameOrigin(NSPoint(x: 12, y: 6))
             box.addSubview(label)
@@ -371,6 +371,7 @@ enum Pins {
             w = pin(text: text, frame: placed(PinView.textPinSize(text, maxHeight: visible.height - 80), around: center))
         }
         StackStore.remove(id)
+        Session.report("stack-changed")
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
         return true

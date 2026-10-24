@@ -85,6 +85,12 @@ enum StackStore {
         item.kind == .image ? nil : try? String(contentsOf: contentURL(item), encoding: .utf8)
     }
 
+    /// How many items are stored (cheap: no content is read).
+    static func count() -> Int {
+        ((try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? [])
+            .filter { FileManager.default.fileExists(atPath: $0.appendingPathComponent("meta.json").path) }.count
+    }
+
     static func item(id: String) -> StackItem? { items().first { $0.id == id } }
 
     // MARK: removing

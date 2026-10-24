@@ -11,6 +11,7 @@ import AppKit
 ///   "copied <changeCount>"  something was put on the clipboard (the parent runs the auto-clear timer)
 ///   "overlay-closed"        the overlay is gone but pins are still open
 ///   "stored"                a pin was stored in the stack
+///   "stack-changed"         an item was taken out of the stack (so the icon's count is updated)
 ///   "pin-item <id>"         the stack asks for a stored item to be pinned
 enum Session {
     static let flag = "--capture"
@@ -50,10 +51,14 @@ enum Session {
         if let s = stack {
             stack = nil
             s.terminate()
+            StackIcon.refresh()
         } else {
             launch([stackFlag], role: .stack)
         }
     }
+
+    /// True while the stack window is showing (also during its two seconds after something was stored).
+    static var isStackShowing: Bool { stack != nil }
 
     private static func launch(_ arguments: [String], role: Role) {
         guard let exe = Bundle.main.executableURL else { return }
@@ -79,6 +84,7 @@ enum Session {
                 children.removeAll { $0 === p }
                 if capturing === p { capturing = nil }
                 if stack === p { stack = nil }
+                StackIcon.refresh()
             }
         }
         do {
@@ -89,6 +95,7 @@ enum Session {
             case .stack: stack = p
             case .pin: break
             }
+            StackIcon.refresh()
         } catch {
             NSLog("Shot: could not start child: \(error)")
         }
@@ -99,7 +106,10 @@ enum Session {
         switch parts.first {
         case "copied": if parts.count > 1, let n = Int(parts[1]) { scheduleClipboardClear(changeCount: n) }
         case "overlay-closed": if capturing === p { capturing = nil }
-        case "stored": if stack == nil { launch([stackFlag, peekFlag], role: .stack) }   // show it for two seconds
+        case "stored":
+            if stack == nil { launch([stackFlag, peekFlag], role: .stack) }   // show it for two seconds
+            StackIcon.refresh()
+        case "stack-changed": StackIcon.refresh()
         case "pin-item": if parts.count > 1 { launch([pinItemFlag, String(parts[1])], role: .pin) }
         default: break
         }
