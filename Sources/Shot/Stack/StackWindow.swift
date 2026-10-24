@@ -14,7 +14,7 @@ private let cardRadius: CGFloat = 14
 final class StackCell: NSView, NSDraggingSource {
     let item: StackItem
     private let onChange: () -> Void
-    private let onHover: (Bool) -> Void
+    private let onAction: () -> Void           // called after a click or a button, so the stack can let go of focus
     private let clip = NSView()                  // clips the content to the rounded corners; the shadow is on the card itself
     private let pinButton = RoundButton(symbol: "pin.fill", tip: "Pin it back on the screen", diameter: 22)
     private let removeButton = RoundButton(symbol: "xmark", tip: "Remove from the stack", diameter: 22)
@@ -23,10 +23,10 @@ final class StackCell: NSView, NSDraggingSource {
     private var hideToast: DispatchWorkItem?
     private var toast: NSView?
 
-    init(item: StackItem, onChange: @escaping () -> Void, onHover: @escaping (Bool) -> Void) {
+    init(item: StackItem, onChange: @escaping () -> Void, onAction: @escaping () -> Void) {
         self.item = item
         self.onChange = onChange
-        self.onHover = onHover
+        self.onAction = onAction
         super.init(frame: NSRect(x: 0, y: 0, width: cardWidth, height: cardHeight))
         wantsLayer = true
         layer?.shadowColor = Warm.ink.cgColor
@@ -52,7 +52,6 @@ final class StackCell: NSView, NSDraggingSource {
         pinButton.setFrameOrigin(NSPoint(x: cardWidth - 2 * 22 - 14, y: cardHeight - 22 - 8))
         removeButton.setFrameOrigin(NSPoint(x: cardWidth - 22 - 8, y: cardHeight - 22 - 8))
         for b in [pinButton, removeButton] { b.alphaValue = 0; addSubview(b) }
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -108,8 +107,8 @@ final class StackCell: NSView, NSDraggingSource {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    override func mouseEntered(with event: NSEvent) { setButtons(visible: true); onHover(true) }
-    override func mouseExited(with event: NSEvent) { setButtons(visible: false); onHover(false) }
+    /// The card the pointer is on (as decided by the stack) shows its two buttons; the others hide them.
+    func setFocused(_ focused: Bool) { setButtons(visible: focused) }
 
     private func setButtons(visible: Bool) {
         NSAnimationContext.runAnimationGroup { ctx in
@@ -148,14 +147,19 @@ final class StackCell: NSView, NSDraggingSource {
             return
         }
         showCopied()
+        onAction()
     }
 
-    @objc private func pinBack() { Session.report("pin-item \(item.id)") }   // the new pin process takes it out of the stack
+    @objc private func pinBack() {
+        Session.report("pin-item \(item.id)")        // the new pin process takes it out of the stack
+        onAction()
+    }
 
     @objc private func remove() {
         StackStore.remove(item.id)
         Session.report("stack-changed")
         onChange()
+        onAction()
     }
 
     /// "Copied" in a capsule on the visible top of the card, for a moment.
@@ -229,6 +233,25 @@ final class StackCell: NSView, NSDraggingSource {
 
 // MARK: the window
 
+/// The stack's content view. It watches the pointer for the whole stack, so which card is under it is decided in one place
+/// and not by the cards themselves: cards sliding under a still pointer must not count as the pointer moving onto them.
+final class StackContentView: NSView {
+    var onPointer: ((NSPoint) -> Void)?
+    var onLeave: (() -> Void)?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func mouseMoved(with event: NSEvent) { onPointer?(convert(event.locationInWindow, from: nil)) }
+    override func mouseEntered(with event: NSEvent) { onPointer?(convert(event.locationInWindow, from: nil)) }
+    override func mouseExited(with event: NSEvent) { onLeave?() }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// The stack process: a column of cards hanging from the floating icon at the top right, stacked like cards in a wallet:
 /// the oldest at the top, each card covering all but the top strip of the one above it, the newest in front and whole.
 /// Pointing at a card slides the ones below it down so that card shows in full. The process lives only while the stack is
@@ -239,8 +262,12 @@ final class StackController {
     private let emptyLabel = NSTextField(labelWithString: "Nothing stored. Hover a pin and click the tray button.")
     private var cells: [StackCell] = []          // oldest first: top to bottom
     private var shown: [StackItem] = []
-    private var hovered: Int?
+    private(set) var hovered: Int?                // the card that is unfolded (the one the pointer is on)
     private var releaseHover: DispatchWorkItem?
+    private(set) var focused = true               // false after you click a card or a button, until the pointer moves again
+    private var restPoint = NSPoint.zero          // where the pointer was when focus was let go
+    private var targetFrames: [NSRect] = []       // where the cards are going to be (not where they are in the middle of a move)
+    private static let restingAlpha: CGFloat = 0.55
     private var screen: NSScreen
     private var lastIcon = NSRect.zero            // where the icon was when the column was last placed
     private var peekUntil = Date.distantFuture
@@ -256,7 +283,11 @@ final class StackController {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        panel.contentView = NSView()
+        let content = StackContentView()
+        content.onPointer = { [weak self] p in self?.pointerMoved(p) }
+        content.onLeave = { [weak self] in self?.scheduleRelease() }
+        panel.contentView = content
+        panel.acceptsMouseMovedEvents = true
 
         emptyPill.wantsLayer = true
         emptyPill.layer?.cornerRadius = 20
@@ -321,30 +352,63 @@ final class StackController {
         cells.forEach { $0.removeFromSuperview() }
         emptyPill.removeFromSuperview()
         // `items` is newest first; the column runs oldest (top) to newest (front, bottom).
-        cells = items.reversed().enumerated().map { index, item in
+        cells = items.reversed().map { item in
             StackCell(item: item,
                       onChange: { [weak self] in self?.reload(force: false) },
-                      onHover: { [weak self] entered in self?.hover(index: index, entered: entered) })
+                      onAction: { [weak self] in self?.loseFocus() })
         }
         if cells.isEmpty { panel.contentView?.addSubview(emptyPill) }
         cells.forEach { panel.contentView?.addSubview($0) }       // later cards are in front
         layout(animated: false)
     }
 
-    /// Moving from one card straight onto the next must not flicker, so letting go of a card waits a moment.
-    private func hover(index: Int, entered: Bool) {
-        releaseHover?.cancel()
-        if entered {
-            guard hovered != index else { return }
-            hovered = index
-            layout(animated: true)
-        } else {
-            let work = DispatchWorkItem { [weak self] in
-                self?.hovered = nil
-                self?.layout(animated: true)
+    /// The card under `p`, by where the cards are going to be: the one in front where they overlap.
+    private func cardAt(_ p: NSPoint) -> Int? {
+        targetFrames.indices.reversed().first { targetFrames[$0].contains(p) }
+    }
+
+    /// The pointer moved over the stack. Pointing at a card unfolds it. While the stack has let go of focus (after a click) it
+    /// takes the pointer moving a little to get it back.
+    func pointerMoved(_ p: NSPoint) {
+        if !focused {
+            guard hypot(p.x - restPoint.x, p.y - restPoint.y) > 6 else { return }
+            focused = true
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.15
+                panel.animator().alphaValue = 1
             }
-            releaseHover = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+        }
+        releaseHover?.cancel()
+        guard let index = cardAt(p) else { scheduleRelease(); return }       // between cards or in the margin
+        guard index != hovered else { return }
+        hovered = index
+        layout(animated: true)
+    }
+
+    /// The pointer left the cards: fold the unfolded card back after a moment (so crossing a gap does not flicker).
+    private func scheduleRelease() {
+        releaseHover?.cancel()
+        guard hovered != nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.hovered = nil
+            self?.layout(animated: true)
+        }
+        releaseHover = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    /// After a click on a card or a button the stack lets go of focus by itself: the unfolded card folds back, the buttons
+    /// hide and the whole stack dims, but it stays on the screen. Moving the pointer again brings focus back.
+    private func loseFocus() {
+        releaseHover?.cancel()
+        let mouse = NSEvent.mouseLocation
+        restPoint = panel.contentView?.convert(panel.convertPoint(fromScreen: mouse), from: nil) ?? .zero
+        focused = false
+        hovered = nil
+        layout(animated: true)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            panel.animator().alphaValue = StackController.restingAlpha
         }
     }
 
@@ -387,6 +451,8 @@ final class StackController {
         if x + shadowRoom < visible.minX + 8 { x = icon.minX - shadowRoom }
         let y = below ? icon.minY - gap + shadowRoom - height : icon.maxY + gap - shadowRoom
         let panelFrame = NSRect(x: x, y: y, width: width, height: height)
+        targetFrames = frames
+        for (i, cell) in cells.enumerated() { cell.setFocused(focused && i == hovered) }
         if animated {
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.16
