@@ -51,6 +51,12 @@ enum Session {
         if stack != nil { hideStack() } else { launch([stackFlag], role: .stack) }
     }
 
+    /// Something was put in the stack: update the icon and, if the stack is closed, show it for two seconds.
+    static func stackStored() {
+        if stack == nil { launch([stackFlag, peekFlag], role: .stack) }
+        StackIcon.refresh()
+    }
+
     static func hideStack() {
         guard let s = stack else { return }
         stack = nil
@@ -107,9 +113,7 @@ enum Session {
         switch parts.first {
         case "copied": if parts.count > 1, let n = Int(parts[1]) { scheduleClipboardClear(changeCount: n) }
         case "overlay-closed": if capturing === p { capturing = nil }
-        case "stored":
-            if stack == nil { launch([stackFlag, peekFlag], role: .stack) }   // show it for two seconds
-            StackIcon.refresh()
+        case "stored": stackStored()
         case "stack-changed": StackIcon.refresh()
         case "pin-item": if parts.count > 1 { launch([pinItemFlag, String(parts[1])], role: .pin) }
         default: break

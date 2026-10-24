@@ -108,8 +108,15 @@ enum StackIcon {
 final class StackIconView: NSView {
     private(set) var count = 0              // what the badge shows
     private var active = false
+    private var dropping = false            // something is being dragged over the icon
     private let d = StackIcon.diameter
     private var origin: NSPoint { NSPoint(x: StackIcon.ringRoom, y: StackIcon.ringRoom) }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes(StackDrop.types)
+    }
+    required init?(coder: NSCoder) { fatalError() }
 
     func update(count: Int, active: Bool) {
         self.count = count
@@ -176,8 +183,8 @@ final class StackIconView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if active {
-            // The stack is open: the icon sits on a soft peach plate (darker than the cream pocket square, so that still shows).
+        if active || dropping {
+            // The stack is open, or something is held over the icon ready to drop: it sits on a soft peach plate (darker than the cream pocket square, so that still shows).
             fill(NSBezierPath(roundedRect: NSRect(x: origin.x - 4, y: origin.y - 4, width: d + 8, height: d + 8), xRadius: 16, yRadius: 16),
                  (Warm.color(0xFBDABA), Warm.color(0xEFB98C)))
         }
@@ -217,6 +224,31 @@ final class StackIconView: NSView {
         let badge = NSBezierPath(roundedRect: NSRect(x: origin.x + d - w + 5, y: origin.y + d - h + 5, width: w, height: h), xRadius: h / 2, yRadius: h / 2)
         fill(badge, Warm.badge, edge: false)
         text.draw(at: NSPoint(x: badge.bounds.midX - text.size().width / 2, y: badge.bounds.midY - text.size().height / 2))
+    }
+
+    // MARK: drops
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard StackDrop.accepts(sender.draggingPasteboard) else { return [] }
+        dropping = true
+        needsDisplay = true
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        dropping = false
+        needsDisplay = true
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { StackDrop.accepts(sender.draggingPasteboard) }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        dropping = false
+        needsDisplay = true
+        let v = StackIcon.homeScreen.visibleFrame
+        guard StackDrop.store(sender.draggingPasteboard, around: CGPoint(x: v.midX, y: v.midY)) > 0 else { return false }
+        Session.stackStored()          // the stack shows for two seconds so you can see it went in
+        return true
     }
 
     // MARK: mouse
