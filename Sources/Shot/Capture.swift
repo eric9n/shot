@@ -5,7 +5,7 @@ enum Mode: UInt32 {
 }
 
 func capture(_ mode: Mode) {
-    if mode == .stack { Session.toggleStack(); return }      // not a capture: it shows or hides the stack
+    if mode == .stack { StackIcon.toggleVisible(); return }  // not a capture: it shows or hides the floating icon
     if mode == .delayed {
         // The shortcut starts a countdown with the default delay; pressing it again cancels the countdown.
         // When it ends the screen freezes with the last region already selected (plain selection if there is none yet).

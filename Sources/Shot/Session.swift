@@ -46,15 +46,16 @@ enum Session {
         launch([pinClipboardFlag], role: .pin)
     }
 
-    /// Shows the stack, or hides it if it is showing.
+    /// Opens the stack, or closes it if it is open (a click on the icon).
     static func toggleStack() {
-        if let s = stack {
-            stack = nil
-            s.terminate()
-            StackIcon.refresh()
-        } else {
-            launch([stackFlag], role: .stack)
-        }
+        if stack != nil { hideStack() } else { launch([stackFlag], role: .stack) }
+    }
+
+    static func hideStack() {
+        guard let s = stack else { return }
+        stack = nil
+        s.terminate()
+        StackIcon.refresh()
     }
 
     /// True while the stack window is showing (also during its two seconds after something was stored).

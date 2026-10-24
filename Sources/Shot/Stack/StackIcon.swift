@@ -11,23 +11,70 @@ enum StackIcon {
     private static var panel: NSPanel?
     private static var view: StackIconView?
 
+    /// Whether the icon is showing (the shortcut, the menu and Settings turn it on and off).
     static var isEnabled: Bool { !UserDefaults.standard.bool(forKey: "hideStackIcon") }
 
-    /// Where the icon sits on `screen`: the top right corner, under the menu bar.
-    static func circle(on screen: NSScreen) -> NSRect {
-        let v = screen.visibleFrame
-        return NSRect(x: v.maxX - 12 - badgeRoom - diameter, y: v.maxY - 8 - badgeRoom - diameter, width: diameter, height: diameter)
+    /// Shows or hides the whole icon. Hiding it also closes the stack if it is open.
+    static func setVisible(_ visible: Bool) {
+        UserDefaults.standard.set(!visible, forKey: "hideStackIcon")
+        if !visible { Session.hideStack() }
+        apply()
     }
 
-    /// True when the icon is shown on `screen`, so the stack makes room for it.
-    static func isShown(on screen: NSScreen) -> Bool { isEnabled && screen == NSScreen.screens.first }
+    static func toggleVisible() { setVisible(!isEnabled) }
+
+    // Where the icon was left, as ["screen": display id, "dx": ..., "dy": ...]: dx and dy are how far the pouch's top right
+    // corner is from the top right corner of that screen's usable area. Until it is dragged it sits just under the menu bar
+    // in the corner of the main screen.
+    private static let positionKey = "stackIconPosition"
+
+    private static func displayID(_ screen: NSScreen) -> Int {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue ?? 0
+    }
+
+    /// The screen the icon is on: the one it was last left on, or the main one (also if that display is gone).
+    static var homeScreen: NSScreen {
+        let saved = UserDefaults.standard.dictionary(forKey: positionKey)?["screen"] as? Int
+        return NSScreen.screens.first { displayID($0) == saved } ?? NSScreen.screens[0]
+    }
+
+    private static var offset: CGPoint {
+        if let d = UserDefaults.standard.dictionary(forKey: positionKey), let x = d["dx"] as? Double, let y = d["dy"] as? Double { return CGPoint(x: x, y: y) }
+        return CGPoint(x: 12 + badgeRoom, y: 8 + badgeRoom)
+    }
+
+    /// Keeps the pouch (and its badge and plate) fully on the screen.
+    private static func clamped(_ r: NSRect, in v: NSRect) -> NSRect {
+        NSRect(x: min(max(r.minX, v.minX + ringRoom), v.maxX - diameter - badgeRoom),
+               y: min(max(r.minY, v.minY + ringRoom), v.maxY - diameter - badgeRoom), width: diameter, height: diameter)
+    }
+
+    /// Where the icon sits on `screen`.
+    static func circle(on screen: NSScreen) -> NSRect {
+        let v = screen.visibleFrame, o = offset
+        return clamped(NSRect(x: v.maxX - o.x - diameter, y: v.maxY - o.y - diameter, width: diameter, height: diameter), in: v)
+    }
+
+    /// Moves the icon (dragged by the user) so its window's bottom left corner is at `origin`: onto whichever screen it was
+    /// dragged to, kept fully on that screen, and remembered.
+    static func move(toWindowOrigin origin: NSPoint) {
+        guard let panel = panel else { return }
+        let wanted = NSRect(x: origin.x + ringRoom, y: origin.y + ringRoom, width: diameter, height: diameter)
+        let middle = NSPoint(x: wanted.midX, y: wanted.midY)
+        let target = NSScreen.screens.first { $0.frame.contains(middle) } ?? homeScreen
+        let v = target.visibleFrame
+        let c = clamped(wanted, in: v)
+        panel.setFrameOrigin(NSPoint(x: c.minX - ringRoom, y: c.minY - ringRoom))
+        UserDefaults.standard.set(["screen": displayID(target), "dx": Double(v.maxX - c.maxX), "dy": Double(v.maxY - c.maxY)], forKey: positionKey)
+    }
 
     /// Shows or hides the icon according to the setting.
     static func apply() {
-        guard isEnabled, let screen = NSScreen.screens.first else {
+        guard isEnabled, !NSScreen.screens.isEmpty else {
             panel?.orderOut(nil)
             return
         }
+        let screen = homeScreen
         let side = diameter + badgeRoom + ringRoom
         if panel == nil {
             let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -176,9 +223,37 @@ final class StackIconView: NSView {
     // MARK: mouse
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override func mouseDown(with event: NSEvent) {}
-    override func mouseUp(with event: NSEvent) {
-        if bounds.contains(convert(event.locationInWindow, from: nil)) { Session.toggleStack() }
+
+    // A click shows or hides the stack; pressing and moving drags the icon (and the open stack follows it).
+    private var grab: NSPoint?             // where in the window the pointer took hold
+    private var dragged = false
+
+    override func mouseDown(with event: NSEvent) {
+        grab = event.locationInWindow
+        dragged = false
     }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let grab = grab, let window = window else { return }
+        let pointer = window.convertPoint(toScreen: event.locationInWindow)
+        let origin = NSPoint(x: pointer.x - grab.x, y: pointer.y - grab.y)
+        if !dragged {
+            guard hypot(origin.x - window.frame.origin.x, origin.y - window.frame.origin.y) > 4 else { return }
+            dragged = true
+            NSCursor.closedHand.push()
+        }
+        StackIcon.move(toWindowOrigin: origin)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if dragged {
+            NSCursor.pop()
+        } else if bounds.contains(convert(event.locationInWindow, from: nil)) {
+            Session.toggleStack()
+        }
+        grab = nil
+        dragged = false
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
 }

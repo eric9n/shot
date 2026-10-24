@@ -37,7 +37,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
         var rows: [NSView] = []
         for (mode, title) in [(Mode.region, "Capture Region"), (.window, "Capture Window"), (.fullscreen, "Capture Full Screen"),
-                            (.repeatLast, "Repeat Last Region"), (.delayed, "Delayed Capture"), (.stack, "Show / Hide Stack")] {
+                            (.repeatLast, "Repeat Last Region"), (.delayed, "Delayed Capture"), (.stack, "Show / Hide Stack Icon")] {
             let label = NSTextField(labelWithString: title)
             label.widthAnchor.constraint(equalToConstant: 150).isActive = true
             let b = NSButton(title: Shortcuts.current[mode]?.display ?? "", target: self, action: #selector(startRecording(_:)))
@@ -115,7 +115,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         note.preferredMaxLayoutWidth = 340
         note.lineBreakMode = .byWordWrapping
         let reset = NSButton(title: "Reset to Defaults", target: self, action: #selector(resetDefaults))
-        let stackIcon = NSButton(checkboxWithTitle: "Show the stack icon at the top right", target: self, action: #selector(toggleStackIcon(_:)))
+        let stackIcon = NSButton(checkboxWithTitle: "Show the stack icon (drag it anywhere)", target: self, action: #selector(toggleStackIcon(_:)))
         stackIcon.state = StackIcon.isEnabled ? .on : .off
         let showIcon = NSButton(checkboxWithTitle: "Show menu bar icon", target: self, action: #selector(toggleIcon(_:)))
         showIcon.state = UserDefaults.standard.bool(forKey: "hideMenuIcon") ? .off : .on
@@ -252,9 +252,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     }
 
     @objc func toggleStackIcon(_ b: NSButton) {
-        UserDefaults.standard.set(b.state != .on, forKey: "hideStackIcon")
-        StackIcon.apply()
-        note.stringValue = b.state == .on ? "Stack icon shown." : "Stack icon hidden; the shortcut and the menu still show the stack."
+        StackIcon.setVisible(b.state == .on)
+        note.stringValue = b.state == .on ? "Stack icon shown." : "Stack icon hidden. Bring it back with its shortcut or from the menu."
     }
 
     @objc func toggleIcon(_ b: NSButton) {

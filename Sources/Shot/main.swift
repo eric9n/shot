@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let delayItem = NSMenuItem(title: "Other Delays", action: nil, keyEquivalent: "")
         delayItem.submenu = delays
         menu.addItem(delayItem)
-        add("Show / Hide Stack" + sc(.stack), #selector(toggleStack))
+        add("Show / Hide Stack Icon" + sc(.stack), #selector(toggleStackIcon))
         add("Pin from Clipboard", #selector(pinClipboard))
         add("Close All Pins", #selector(closePins))
         menu.addItem(.separator())
@@ -75,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func repeatLast() { capture(.repeatLast) }
     @objc func delayedDefault() { capture(.delayed) }
     @objc func delayed(_ item: NSMenuItem) { Countdown.start(seconds: item.tag) { Session.start(.repeatLast) } }
-    @objc func toggleStack() { Session.toggleStack() }
+    @objc func toggleStackIcon() { StackIcon.toggleVisible() }
     @objc func pinClipboard() { Session.pinClipboard() }
     @objc func closePins() { Session.closeAllPins() }
     @objc func openFolder() { NSWorkspace.shared.open(saveDir) }

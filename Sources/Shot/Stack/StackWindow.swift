@@ -241,13 +241,13 @@ final class StackController {
     private var shown: [StackItem] = []
     private var hovered: Int?
     private var releaseHover: DispatchWorkItem?
-    private let screen: NSScreen
+    private var screen: NSScreen
+    private var lastIcon = NSRect.zero            // where the icon was when the column was last placed
     private var peekUntil = Date.distantFuture
 
     /// `peek`: show for two seconds (when something has just been stored), then hide again.
     init(peek: Bool) {
-        let mouse = NSEvent.mouseLocation
-        screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
+        screen = StackIcon.homeScreen
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .statusBar
         panel.isOpaque = false
@@ -286,6 +286,17 @@ final class StackController {
         }
         // Things stored by pins in other processes show up within half a second.
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in self?.tick() }
+        // The column hangs from the icon, so it follows when the icon is dragged.
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.followIcon() }
+    }
+
+    private func followIcon() {
+        CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication)       // see what the menu-bar process just saved
+        let home = StackIcon.homeScreen
+        let icon = StackIcon.circle(on: home)
+        guard icon != lastIcon || home != screen else { return }
+        screen = home
+        layout(animated: false)
     }
 
     private func tick() {
@@ -337,41 +348,45 @@ final class StackController {
         }
     }
 
-    /// Where the column hangs: just under the floating icon (or the menu bar), right edges lined up.
-    private func anchor() -> (top: CGFloat, right: CGFloat) {
-        let visible = screen.visibleFrame
-        if StackIcon.isShown(on: screen) {
-            let icon = StackIcon.circle(on: screen)
-            return (icon.minY - 10, icon.maxX)
-        }
-        return (visible.maxY - 8, visible.maxX - 14)
-    }
-
     private func layout(animated: Bool) {
         let n = cells.count
-        let (top, right) = anchor()
+        let visible = screen.visibleFrame
+        let icon = StackIcon.circle(on: screen)          // the column hangs from where the icon is (shown or not)
+        lastIcon = icon
+        let gap: CGFloat = 12
         let width = cardWidth + 2 * shadowRoom
+
+        // Under the icon if there is room for the column there, otherwise above it (the column then opens upwards).
+        let naturalHeight: CGFloat = n == 0 ? 52 + 2 * shadowRoom
+            : 2 * shadowRoom + cardHeight + CGFloat(n - 1) * stripHeight + (n > 1 ? cardHeight - stripHeight : 0)
+        let spaceBelow = icon.minY - gap - visible.minY - 8
+        let spaceAbove = visible.maxY - icon.maxY - gap - 8
+        let below = spaceBelow >= naturalHeight || spaceBelow >= spaceAbove
+        let room = below ? spaceBelow : spaceAbove
 
         var height: CGFloat
         var frames: [NSRect] = []
         if n == 0 {
-            height = 52 + 2 * shadowRoom
+            height = naturalHeight
             emptyPill.frame = NSRect(x: shadowRoom, y: shadowRoom, width: cardWidth, height: 52)
             emptyLabel.frame = NSRect(x: 12, y: 8, width: cardWidth - 24, height: 36)
         } else {
             // When there are many cards on a short screen the visible strips get thinner so the column still fits.
-            let room = top - screen.visibleFrame.minY - 16
             let strip = n > 1 ? max(14, min(stripHeight, (room - 2 * shadowRoom - 2 * cardHeight) / CGFloat(n - 1))) : 0
             // The front card is already whole; pointing at any other card makes room for it by moving the ones below it down.
             let extra: CGFloat = (hovered != nil && hovered! < n - 1) ? cardHeight - strip : 0
             height = 2 * shadowRoom + cardHeight + CGFloat(n - 1) * strip + extra
             for i in 0..<n {
-                let below = (hovered != nil && i > hovered!) ? extra : 0
-                let offsetFromTop = shadowRoom + CGFloat(i) * strip + below
+                let belowHovered = (hovered != nil && i > hovered!) ? extra : 0
+                let offsetFromTop = shadowRoom + CGFloat(i) * strip + belowHovered
                 frames.append(NSRect(x: shadowRoom, y: height - offsetFromTop - cardHeight, width: cardWidth, height: cardHeight))
             }
         }
-        let panelFrame = NSRect(x: right + shadowRoom - width, y: top - height, width: width, height: height)
+        // Right edges lined up with the icon; if that would run off the left of the screen, left edges instead.
+        var x = icon.maxX + shadowRoom - width
+        if x + shadowRoom < visible.minX + 8 { x = icon.minX - shadowRoom }
+        let y = below ? icon.minY - gap + shadowRoom - height : icon.maxY + gap - shadowRoom
+        let panelFrame = NSRect(x: x, y: y, width: width, height: height)
         if animated {
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.16
