@@ -297,6 +297,8 @@ final class OverlayView: NSView, NSTextViewDelegate {
             pinAction()
         case 17 where editing && e.modifierFlags.intersection([.command, .control, .option]).isEmpty:   // T: copy text
             ocrAction()
+        case 12 where editing && e.modifierFlags.intersection([.command, .control, .option]).isEmpty:   // Q: copy what a QR code says
+            qrAction()
         case 51, 117:
             if let i = selected, annotations.indices.contains(i) { annotations.remove(at: i); selected = nil; syncChrome() }
         case 123...126 where editing:   // ← → ↓ ↑ ; ⇧ moves 10 points instead of 1
@@ -455,6 +457,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
             btn("arrow.uturn.forward", "Redo", #selector(redoAction)),
             btn("pin", "Pin", #selector(pinAction)),
             btn("text.viewfinder", "Text", #selector(ocrAction), tip: "Copy the text in the selection (T)"),
+            btn("qrcode.viewfinder", "QR", #selector(qrAction), tip: "Copy what the QR code in the selection says (Q)"),
             dragHandle,
             btn("xmark", "Close", #selector(closeAction)),
             btn("arrow.down.to.line", "Save", #selector(saveAction)),
@@ -610,6 +613,23 @@ final class OverlayView: NSView, NSTextViewDelegate {
             self.recognizing = false
             if text.isEmpty { self.showStatus("No text found", hideAfter: 1.5); return }
             copyTextToClipboard(text)
+            self.onClose()
+        }
+    }
+
+    /// Reads the QR code (or bar code) in the selection, copies what it says (one per line if there are several), and closes.
+    /// If there is no code, the overlay stays so you can pick another area.
+    @objc func qrAction() {
+        commitText()
+        guard !recognizing, let crop = selectionCrop() else { return }
+        recognizing = true
+        lastRegion = sel
+        showStatus("Reading the code…")
+        Qr.read(crop) { [weak self] payloads in
+            guard let self = self else { return }
+            self.recognizing = false
+            if payloads.isEmpty { self.showStatus("No QR code found", hideAfter: 1.5); return }
+            copyTextToClipboard(payloads.joined(separator: "\n"))
             self.onClose()
         }
     }
