@@ -1,26 +1,36 @@
 import AppKit
 
-/// Every capture runs in its own short-lived copy of Shot (`Shot --capture <mode>`). The child freezes the screen, shows
-/// the overlay, and exits when the overlay and any pins it made are closed, so all of its memory goes back to the system.
-/// The menu-bar process never holds a screenshot. Pinning the clipboard's picture (`Shot --pin-clipboard`) works the same
-/// way, without an overlay. Text on the clipboard is pinned as text.
+/// Shot runs the heavy things in short-lived copies of itself, so the menu-bar process never holds a screenshot and
+/// everything a copy used goes back to the system when it exits:
+///   `Shot --capture <mode>`   freezes the screen and shows the overlay; exits when the overlay and its pins are closed
+///   `Shot --pin-clipboard`    pins the clipboard's picture or text
+///   `Shot --pin-item <id>`    puts a stored item back on the screen as a pin
+///   `Shot --stack [--peek]`   the stack window (`--peek`: only for two seconds, after something was stored)
 ///
-/// The child talks back with one line per event on its standard output:
+/// A child talks back with one line per event on its standard output:
 ///   "copied <changeCount>"  something was put on the clipboard (the parent runs the auto-clear timer)
 ///   "overlay-closed"        the overlay is gone but pins are still open
+///   "stored"                a pin was stored in the stack
+///   "pin-item <id>"         the stack asks for a stored item to be pinned
 enum Session {
     static let flag = "--capture"
     static let pinClipboardFlag = "--pin-clipboard"
+    static let pinItemFlag = "--pin-item"
+    static let stackFlag = "--stack"
+    static let peekFlag = "--peek"
 
     // MARK: parent (menu-bar process)
 
+    private enum Role { case capture, pin, stack }
+
     private static var children: [Process] = []
     private static var capturing: Process?          // the child whose overlay is still up
+    private static var stack: Process?              // the stack window, while it is showing
 
     /// Starts a capture in a new child, unless one is already freezing the screen.
     static func start(_ mode: Mode) {
         guard capturing == nil else { return }
-        launch([flag, String(mode.rawValue)], isCapture: true)
+        launch([flag, String(mode.rawValue)], role: .capture)
     }
 
     /// True when the clipboard holds a picture or text that can be pinned.
@@ -32,10 +42,20 @@ enum Session {
     /// Pins the clipboard's picture or text in a new child.
     static func pinClipboard() {
         guard clipboardCanPin else { NSSound.beep(); return }
-        launch([pinClipboardFlag], isCapture: false)
+        launch([pinClipboardFlag], role: .pin)
     }
 
-    private static func launch(_ arguments: [String], isCapture: Bool) {
+    /// Shows the stack, or hides it if it is showing.
+    static func toggleStack() {
+        if let s = stack {
+            stack = nil
+            s.terminate()
+        } else {
+            launch([stackFlag], role: .stack)
+        }
+    }
+
+    private static func launch(_ arguments: [String], role: Role) {
         guard let exe = Bundle.main.executableURL else { return }
         let p = Process()
         p.executableURL = exe
@@ -58,22 +78,29 @@ enum Session {
             DispatchQueue.main.async {
                 children.removeAll { $0 === p }
                 if capturing === p { capturing = nil }
+                if stack === p { stack = nil }
             }
         }
         do {
             try p.run()
             children.append(p)
-            if isCapture { capturing = p }
+            switch role {
+            case .capture: capturing = p
+            case .stack: stack = p
+            case .pin: break
+            }
         } catch {
             NSLog("Shot: could not start child: \(error)")
         }
     }
 
-    private static func handle(_ line: String, from p: Process) {
+    static func handle(_ line: String, from p: Process) {
         let parts = line.split(separator: " ")
         switch parts.first {
         case "copied": if parts.count > 1, let n = Int(parts[1]) { scheduleClipboardClear(changeCount: n) }
         case "overlay-closed": if capturing === p { capturing = nil }
+        case "stored": if stack == nil { launch([stackFlag, peekFlag], role: .stack) }   // show it for two seconds
+        case "pin-item": if parts.count > 1 { launch([pinItemFlag, String(parts[1])], role: .pin) }
         default: break
         }
     }
@@ -81,23 +108,40 @@ enum Session {
     /// True while a capture child is still freezing the screen or showing its overlay.
     static var isCapturing: Bool { capturing != nil }
     /// Children that only show pins now.
-    static var hasPins: Bool { children.contains { $0 !== capturing } }
-    static func closeAllPins() { children.filter { $0 !== capturing }.forEach { $0.terminate() } }
+    private static var pinChildren: [Process] { children.filter { $0 !== capturing && $0 !== stack } }
+    static var hasPins: Bool { !pinChildren.isEmpty }
+    static func closeAllPins() { pinChildren.forEach { $0.terminate() } }
 
-    // MARK: child (one capture)
+    /// Shot is quitting: close everything it started and forget what was stored in the stack.
+    static func shutdown() {
+        children.forEach { $0.terminate() }
+        StackStore.clear()
+    }
 
-    /// If launched as a child (a capture, or a pin of the clipboard's picture), does its job and never returns.
+    // MARK: child
+
+    /// If launched as a child, does its job and never returns.
     static func runChildIfRequested() {
         let args = CommandLine.arguments
         let app = NSApplication.shared
+        func value(after name: String) -> String? { args.firstIndex(of: name).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
+
+        if args.contains(stackFlag) {
+            StackSession.run(peek: args.contains(peekFlag))
+        }
         if args.contains(pinClipboardFlag) {
             app.setActivationPolicy(.accessory)
             if !Pins.pinClipboard() { exit(1) }
             app.run()
             exit(0)
         }
-        guard let i = args.firstIndex(of: flag), i + 1 < args.count,
-              let raw = UInt32(args[i + 1]), let mode = Mode(rawValue: raw) else { return }
+        if let id = value(after: pinItemFlag) {
+            app.setActivationPolicy(.accessory)
+            if !Pins.pinItem(id: id) { exit(1) }
+            app.run()
+            exit(0)
+        }
+        guard let raw = value(after: flag).flatMap({ UInt32($0) }), let mode = Mode(rawValue: raw) else { return }
         app.setActivationPolicy(.accessory)
         Shortcuts.installHandler()          // for the overlay's Esc hotkey
         freeze(mode)
@@ -105,8 +149,11 @@ enum Session {
         exit(0)
     }
 
+    /// Tells the menu-bar process something. If it has already gone away the write just fails; it must not kill this process.
     static func report(_ line: String) {
-        FileHandle.standardOutput.write(Data((line + "\n").utf8))
+        signal(SIGPIPE, SIG_IGN)
+        let bytes = Array((line + "\n").utf8)
+        _ = bytes.withUnsafeBytes { write(STDOUT_FILENO, $0.baseAddress, $0.count) }
     }
 
     /// The overlay closed: done, unless pins are still on screen.

@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var item: NSStatusItem!
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        StackStore.clear()      // the stack only holds what was stored in this run
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "Shot")
 
@@ -39,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let delayItem = NSMenuItem(title: "Other Delays", action: nil, keyEquivalent: "")
         delayItem.submenu = delays
         menu.addItem(delayItem)
+        add("Show / Hide Stack" + sc(.stack), #selector(toggleStack))
         add("Pin from Clipboard", #selector(pinClipboard))
         add("Close All Pins", #selector(closePins))
         menu.addItem(.separator())
@@ -58,6 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    func applicationWillTerminate(_ n: Notification) { Session.shutdown() }
+
     /// Launching Shot again (Finder, Spotlight, Dock) reopens Settings, the way back when the icon is hidden.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         SettingsWindow.show { [self] in buildMenu() }
@@ -70,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func repeatLast() { capture(.repeatLast) }
     @objc func delayedDefault() { capture(.delayed) }
     @objc func delayed(_ item: NSMenuItem) { Countdown.start(seconds: item.tag) { Session.start(.repeatLast) } }
+    @objc func toggleStack() { Session.toggleStack() }
     @objc func pinClipboard() { Session.pinClipboard() }
     @objc func closePins() { Session.closeAllPins() }
     @objc func openFolder() { NSWorkspace.shared.open(saveDir) }

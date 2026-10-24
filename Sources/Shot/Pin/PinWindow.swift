@@ -5,10 +5,14 @@ final class PinView: NSView {
     private var cg: CGImage?                     // the only copy of the picture; a bitmap is made just for copy and save
     private(set) var text: String?               // set instead of `cg` when the pin shows text
     private var label: NSTextField?
+    private let storeButton = RoundButton(symbol: "tray.and.arrow.down.fill", tip: "Store in the stack", diameter: 24)
     private static let textFontSize: CGFloat = 16, textPadding: CGFloat = 16
     private var baseSize = NSSize.zero          // size when pinned; zoom is measured against it
     var onClose: () -> Void = {}
-    private static let normalBorder = NSColor.black.withAlphaComponent(0.25).cgColor   // keeps the edge visible over white pages
+    // A hairline (one device pixel) in a mid gray: visible on white pages and on dark ones without looking like a frame.
+    private static let normalBorder = NSColor(white: 0.5, alpha: 0.4).cgColor
+    private static let normalBorderWidth: CGFloat = 0.5
+    private static let cornerRadius: CGFloat = 10
     private var toast: NSView?                   // "Copied", shown briefly after a copy
     private var hideToast: DispatchWorkItem?
 
@@ -22,17 +26,54 @@ final class PinView: NSView {
     init() {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.borderWidth = 1
+        layer?.cornerRadius = PinView.cornerRadius
+        layer?.cornerCurve = .continuous        // the smooth corner macOS uses for its own windows
+        layer?.masksToBounds = true
+        layer?.borderWidth = PinView.normalBorderWidth
         layer?.borderColor = PinView.normalBorder
+
+        // The store button sits at the top right and only shows while the pointer is over the pin.
+        storeButton.target = self
+        storeButton.action = #selector(storePin)
+        storeButton.autoresizingMask = [.minXMargin, .minYMargin]
+        storeButton.alphaValue = 0
+        addSubview(storeButton)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) { setStoreButton(visible: true) }
+    override func mouseExited(with event: NSEvent) { setStoreButton(visible: false) }
+
+    private func setStoreButton(visible: Bool) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            storeButton.animator().alphaValue = visible ? 1 : 0
+        }
+    }
+
+    /// Puts this pin in the stack and closes it. The stack window shows briefly if it was hidden, to show where it went.
+    @objc func storePin() {
+        guard let w = window else { return }
+        var item: StackItem?
+        if let t = text { item = StackStore.add(text: t, frame: w.frame) }
+        else if let b = bitmap { item = StackStore.add(image: b, frame: w.frame) }
+        guard item != nil else { NSSound.beep(); return }
+        Session.report("stored")
+        onClose()
     }
     required init?(coder: NSCoder) { fatalError() }
 
     /// The whole pin is one surface: clicks drag the window, they never reach the text inside.
-    override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(convert(point, from: superview)) ? self : nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let p = convert(point, from: superview)
+        guard bounds.contains(p) else { return nil }
+        return storeButton.alphaValue > 0.5 && storeButton.frame.contains(p) ? storeButton : self
+    }
 
     /// Text pins scale like pictures: font and padding grow with the window.
     override func layout() {
         super.layout()
+        storeButton.setFrameOrigin(NSPoint(x: bounds.width - storeButton.frame.width - 8, y: bounds.height - storeButton.frame.height - 8))
         guard let label = label, baseSize.width > 0 else { return }
         let k = bounds.width / baseSize.width
         let font = NSFont.systemFont(ofSize: PinView.textFontSize * k)
@@ -107,6 +148,7 @@ final class PinView: NSView {
         }
         let c = CGPoint(x: w.frame.midX, y: w.frame.midY)
         w.setFrame(NSRect(x: c.x - width / 2, y: c.y - height / 2, width: width, height: height), display: true)
+        w.invalidateShadow()
     }
 
     /// Back to the size it was pinned at.
@@ -114,6 +156,7 @@ final class PinView: NSView {
         guard let w = window, baseSize.width > 0 else { return }
         let c = CGPoint(x: w.frame.midX, y: w.frame.midY)
         w.setFrame(NSRect(x: c.x - baseSize.width / 2, y: c.y - baseSize.height / 2, width: baseSize.width, height: baseSize.height), display: true)
+        w.invalidateShadow()
     }
 
     /// Scroll: a trackpad reports pixels, a mouse wheel reports lines, so a wheel notch counts for more. One event never
@@ -146,6 +189,7 @@ final class PinView: NSView {
         let m = NSMenu()
         m.addItem(withTitle: "Copy", action: #selector(copyPin), keyEquivalent: "").target = self
         m.addItem(withTitle: "Save", action: #selector(savePin), keyEquivalent: "").target = self
+        m.addItem(withTitle: "Store in Stack", action: #selector(storePin), keyEquivalent: "").target = self
         m.addItem(.separator())
         m.addItem(withTitle: "Zoom In", action: #selector(zoomIn), keyEquivalent: "").target = self
         m.addItem(withTitle: "Zoom Out", action: #selector(zoomOut), keyEquivalent: "").target = self
@@ -184,8 +228,8 @@ final class PinView: NSView {
             label.sizeToFit()
             box = NSView(frame: NSRect(x: 0, y: 0, width: label.frame.width + 24, height: label.frame.height + 12))
             box.wantsLayer = true
-            box.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.7).cgColor
-            box.layer?.cornerRadius = 8
+            box.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.72).cgColor
+            box.layer?.cornerRadius = box.frame.height / 2      // a capsule
             label.setFrameOrigin(NSPoint(x: 12, y: 6))
             box.addSubview(label)
             addSubview(box)
@@ -195,14 +239,14 @@ final class PinView: NSView {
         box.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]   // stays centered while zooming
         box.alphaValue = 1
         box.isHidden = false
-        layer?.borderColor = NSColor.systemBlue.cgColor
-        layer?.borderWidth = 3
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        layer?.borderWidth = 2
 
         hideToast?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             self.layer?.borderColor = PinView.normalBorder
-            self.layer?.borderWidth = 1
+            self.layer?.borderWidth = PinView.normalBorderWidth
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = 0.25
                 box.animator().alphaValue = 0
@@ -267,6 +311,7 @@ enum Pins {
         active.append(w)
         w.orderFrontRegardless()
         w.makeKey()
+        w.invalidateShadow()
         return w
     }
 
@@ -295,6 +340,37 @@ enum Pins {
         } else {
             return false
         }
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    /// Puts a stored item back on the screen where it was (moved onto the screen if that place is gone), then takes it out
+    /// of the stack. Returns false if the item is gone.
+    @discardableResult
+    static func pinItem(id: String) -> Bool {
+        guard let item = StackStore.item(id: id) else { return false }
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.visibleFrame.intersects(item.frame) }
+            ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
+        let visible = screen.visibleFrame
+        func placed(_ size: NSSize, around center: CGPoint) -> NSRect {
+            let w = min(size.width, visible.width), h = min(size.height, visible.height)
+            return NSRect(x: min(max(center.x - w / 2, visible.minX), visible.maxX - w),
+                          y: min(max(center.y - h / 2, visible.minY), visible.maxY - h), width: w, height: h)
+        }
+        let center = CGPoint(x: item.frame.midX, y: item.frame.midY)
+        let w: PinWindow
+        if item.kind == .image {
+            guard let bmp = (try? Data(contentsOf: StackStore.contentURL(item))).flatMap({ NSBitmapImageRep(data: $0) }) else { return false }
+            let frame = placed(item.frame.size, around: center)
+            bmp.size = frame.size
+            w = pin(bmp, frame: frame)
+        } else {
+            guard let text = StackStore.text(of: item) else { return false }
+            w = pin(text: text, frame: placed(PinView.textPinSize(text, maxHeight: visible.height - 80), around: center))
+        }
+        StackStore.remove(id)
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
         return true

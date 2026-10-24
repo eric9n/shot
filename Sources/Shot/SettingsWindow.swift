@@ -37,7 +37,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
         var rows: [NSView] = []
         for (mode, title) in [(Mode.region, "Capture Region"), (.window, "Capture Window"), (.fullscreen, "Capture Full Screen"),
-                            (.repeatLast, "Repeat Last Region"), (.delayed, "Delayed Capture")] {
+                            (.repeatLast, "Repeat Last Region"), (.delayed, "Delayed Capture"), (.stack, "Show / Hide Stack")] {
             let label = NSTextField(labelWithString: title)
             label.widthAnchor.constraint(equalToConstant: 150).isActive = true
             let b = NSButton(title: Shortcuts.current[mode]?.display ?? "", target: self, action: #selector(startRecording(_:)))

@@ -23,6 +23,7 @@ enum Shortcuts {
         .fullscreen: Shortcut(code: UInt32(kVK_ANSI_S), mods: UInt32(controlKey | optionKey), label: "S"),
         .repeatLast: Shortcut(code: UInt32(kVK_ANSI_R), mods: UInt32(controlKey | optionKey), label: "R"),
         .delayed: Shortcut(code: UInt32(kVK_ANSI_D), mods: UInt32(controlKey | optionKey), label: "D"),
+        .stack: Shortcut(code: UInt32(kVK_ANSI_X), mods: UInt32(controlKey | optionKey), label: "X"),
     ]
     static var current: [Mode: Shortcut] = load()
     static var refs: [EventHotKeyRef] = []
@@ -30,7 +31,7 @@ enum Shortcuts {
 
     static func load() -> [Mode: Shortcut] {
         var out = defaults
-        for m in [Mode.region, .window, .fullscreen, .repeatLast, .delayed] {
+        for m in [Mode.region, .window, .fullscreen, .repeatLast, .delayed, .stack] {
             if let d = UserDefaults.standard.data(forKey: "shortcut.\(m.rawValue)"),
                let s = try? JSONDecoder().decode(Shortcut.self, from: d) { out[m] = s }
         }
