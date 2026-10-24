@@ -7,7 +7,7 @@ import AppKit
 enum StackIcon {
     static let diameter: CGFloat = 46                  // the pouch's area
     static let badgeRoom: CGFloat = 8                  // the badge sticks out past it (top and right)
-    static let ringRoom: CGFloat = 6                   // the "open" plate sticks out past it (all around), with room for its shadow
+    static let ringRoom: CGFloat = 14                  // the "open" plate sticks out past it (all around), with room for its shadow to fade out
     private static var panel: NSPanel?
     private static var view: StackIconView?
 
@@ -239,7 +239,7 @@ final class StackIconView: NSView {
     private func drawBadge() {
         let text = NSAttributedString(string: "\(count)", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: Warm.color(0xFFF4E3)])
         let h: CGFloat = 21, w = max(h, text.size().width + 12)
-        let badge = NSBezierPath(roundedRect: NSRect(x: origin.x + d - w + 5, y: origin.y + d - h + 5, width: w, height: h), xRadius: h / 2, yRadius: h / 2)
+        let badge = NSBezierPath(roundedRect: NSRect(x: origin.x + d - w + 3, y: origin.y + d - h + 3, width: w, height: h), xRadius: h / 2, yRadius: h / 2)
         fill(badge, Warm.badge, edge: false)
         text.draw(at: NSPoint(x: badge.bounds.midX - text.size().width / 2, y: badge.bounds.midY - text.size().height / 2))
     }

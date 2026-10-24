@@ -4,7 +4,8 @@ import ImageIO
 private let cardWidth: CGFloat = 232
 private let cardHeight: CGFloat = 132
 private let stripHeight: CGFloat = 38          // how much of a card shows while it is stacked under the next one
-private let shadowRoom: CGFloat = 12           // space around the cards for their shadows
+private let shadowRoom: CGFloat = 26           // space around the cards for their shadows: enough for the shadow to fade out
+                                                // completely, or the window's edge cuts it off in a straight line
 private let cardRadius: CGFloat = 14
 
 // MARK: one card
