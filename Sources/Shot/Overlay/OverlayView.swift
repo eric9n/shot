@@ -300,6 +300,8 @@ final class OverlayView: NSView, NSTextViewDelegate {
             ocrAction()
         case 12 where editing && e.modifierFlags.intersection([.command, .control, .option]).isEmpty:   // Q: copy what a QR code says
             qrAction()
+        case 4 where editing && e.modifierFlags.intersection([.command, .control, .option]).isEmpty:    // H: hide private info
+            hideSensitiveAction()
         case 51, 117:
             if let i = selected, annotations.indices.contains(i) { annotations.remove(at: i); selected = nil; syncChrome() }
         case 123...126 where editing:   // ← → ↓ ↑ ; ⇧ moves 10 points instead of 1
@@ -459,6 +461,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
             btn("pin", "Pin", #selector(pinAction)),
             btn("text.viewfinder", "Text", #selector(ocrAction), tip: "Copy the text in the selection (T)"),
             btn("qrcode.viewfinder", "QR", #selector(qrAction), tip: "Copy what the QR code in the selection says (Q)"),
+            btn("eye.slash", "Hide", #selector(hideSensitiveAction), tip: "Cover phone numbers, e-mails, ID and card numbers, keys and IP addresses (H)"),
             dragHandle,
             btn("xmark", "Close", #selector(closeAction)),
             btn("arrow.down.to.line", "Save", #selector(saveAction)),
@@ -529,6 +532,8 @@ final class OverlayView: NSView, NSTextViewDelegate {
     func undo() {
         guard let last = annotations.popLast() else { return }
         redoStack.append(last)
+        // Things made together (the covers of "hide private info") come away together.
+        while last.group != 0, let previous = annotations.last, previous.group == last.group { redoStack.append(annotations.removeLast()) }
         selected = nil
         syncChrome()
     }
@@ -536,6 +541,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
     func redo() {
         guard let a = redoStack.popLast() else { return }
         annotations.append(a)
+        while a.group != 0, let next = redoStack.last, next.group == a.group { annotations.append(redoStack.removeLast()) }
         syncChrome()
     }
 
@@ -625,6 +631,37 @@ final class OverlayView: NSView, NSTextViewDelegate {
             Pins.pin(text: text, around: CGPoint(x: s.midX + w.frame.minX, y: s.midY + w.frame.minY))
         }
         onClose()
+    }
+
+    private var nextGroup = 1
+
+    /// Finds the private-looking things in the selection (phone numbers, e-mail addresses, ID and card numbers, keys, IP
+    /// addresses) and covers each with a mosaic. The covers are ordinary mosaic annotations, so they can be moved or deleted,
+    /// and one undo takes all of them away. The overlay stays open so you can check before you copy.
+    @objc func hideSensitiveAction() {
+        commitText()
+        guard !recognizing, let s = sel, let crop = selectionCrop() else { return }
+        recognizing = true
+        showStatus("Looking for private info…")
+        Sensitive.find(in: crop) { [weak self] boxes in
+            guard let self = self else { return }
+            self.recognizing = false
+            if boxes.isEmpty { self.showStatus("Nothing private found", hideAfter: 1.5); return }
+            let group = self.nextGroup
+            self.nextGroup += 1
+            for b in boxes {
+                // The box is in 0...1 of the selection, origin at the bottom left, like the overlay itself; a little extra around it.
+                let r = NSRect(x: s.minX + b.minX * s.width, y: s.minY + b.minY * s.height, width: b.width * s.width, height: b.height * s.height)
+                    .insetBy(dx: -3, dy: -3).intersection(s)
+                guard !r.isNull, r.width > 0, r.height > 0 else { continue }
+                self.annotations.append(Annotation(tool: .mosaic, points: [CGPoint(x: r.minX, y: r.minY), CGPoint(x: r.maxX, y: r.maxY)],
+                                                   color: self.color, level: self.sizeLevel, style: 0, group: group))
+            }
+            self.redoStack = []
+            self.selected = nil
+            self.syncChrome()
+            self.showStatus(boxes.count == 1 ? "Covered 1 item" : "Covered \(boxes.count) items", hideAfter: 1.5)
+        }
     }
 
     /// Reads the QR code (or bar code) in the selection, copies and pins what it says (one per line if there are several), and closes.

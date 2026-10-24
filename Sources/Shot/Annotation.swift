@@ -9,6 +9,7 @@ struct Annotation {
     var text = ""
     var level = 1   // size: 0 thin, 1 medium, 2 thick (line width, font size, marker size, highlighter width)
     var style = 0   // 0 solid, 1 dashed, 2 filled (filled only means something for rectangles and ellipses)
+    var group = 0   // annotations made together (the covers of "hide private info") share a number, and undo and redo take them together
 }
 
 enum AnnotationRenderer {
