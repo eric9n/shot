@@ -25,7 +25,7 @@
 
 ## 构建与安装
 
-需要 Xcode 命令行工具（Swift 5.9+），macOS 13+。
+需要 Xcode 命令行工具（Swift 5.9+），macOS 27 及以上（不兼容更旧的系统）。
 
 ```sh
 ./build.sh                      # 生成 Shot.app（本机临时签名）

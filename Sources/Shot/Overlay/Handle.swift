@@ -26,11 +26,8 @@ enum Handle: CaseIterable {
         case .l, .r: return .resizeLeftRight
         case .t, .b: return .resizeUpDown
         default:
-            if #available(macOS 15, *) {
-                let pos: NSCursor.FrameResizePosition = self == .tl ? .topLeft : self == .tr ? .topRight : self == .bl ? .bottomLeft : .bottomRight
-                return NSCursor.frameResize(position: pos, directions: .all)
-            }
-            return .crosshair
+            let pos: NSCursor.FrameResizePosition = self == .tl ? .topLeft : self == .tr ? .topRight : self == .bl ? .bottomLeft : .bottomRight
+            return NSCursor.frameResize(position: pos, directions: .all)
         }
     }
 }

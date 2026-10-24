@@ -30,6 +30,7 @@ final class StackCell: NSView, NSDraggingSource {
         self.onAction = onAction
         super.init(frame: NSRect(x: 0, y: 0, width: cardWidth, height: cardHeight))
         wantsLayer = true
+        clipsToBounds = false                  // the card's shadow is drawn outside its own bounds
         layer?.shadowColor = Warm.ink.cgColor
         layer?.shadowOpacity = 0.32
         layer?.shadowRadius = 7
