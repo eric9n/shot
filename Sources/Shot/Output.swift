@@ -58,6 +58,17 @@ enum Output {
         return url
     }
 
+    /// Saves text as a .txt file in `dir`, named like screenshots.
+    @discardableResult
+    static func writeText(_ text: String, to dir: URL = saveDir) -> URL? {
+        let pattern = namePattern
+        let counter = fileCounter
+        let url = uniqueURL(in: dir, name: fileName(pattern: pattern, counter: counter), ext: "txt")
+        guard (try? text.write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
+        if pattern.contains("{n}") { fileCounter = counter + 1 }
+        return url
+    }
+
     /// Example of what the current settings produce, for the Settings window.
     static func example() -> String {
         "\(fileName(pattern: namePattern, counter: fileCounter)).\(saveFormat.rawValue)"

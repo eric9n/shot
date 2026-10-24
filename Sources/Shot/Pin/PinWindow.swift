@@ -3,6 +3,9 @@ import AppKit
 /// The picture inside a pinned window. Drag to move, scroll to zoom, double-click or Esc to close, right-click for more.
 final class PinView: NSView {
     private var cg: CGImage?                     // the only copy of the picture; a bitmap is made just for copy and save
+    private(set) var text: String?               // set instead of `cg` when the pin shows text
+    private var label: NSTextField?
+    private static let textFontSize: CGFloat = 16, textPadding: CGFloat = 16
     private var baseSize = NSSize.zero          // size when pinned; zoom is measured against it
     var onClose: () -> Void = {}
     private static let normalBorder = NSColor.black.withAlphaComponent(0.25).cgColor   // keeps the edge visible over white pages
@@ -23,6 +26,56 @@ final class PinView: NSView {
         layer?.borderColor = PinView.normalBorder
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    /// The whole pin is one surface: clicks drag the window, they never reach the text inside.
+    override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(convert(point, from: superview)) ? self : nil }
+
+    /// Text pins scale like pictures: font and padding grow with the window.
+    override func layout() {
+        super.layout()
+        guard let label = label, baseSize.width > 0 else { return }
+        let k = bounds.width / baseSize.width
+        let font = NSFont.systemFont(ofSize: PinView.textFontSize * k)
+        if label.font?.pointSize != font.pointSize { label.font = font }
+        label.frame = bounds.insetBy(dx: PinView.textPadding * k, dy: PinView.textPadding * k)
+    }
+
+    /// Size the label needs for `text` wrapped to `width`, at `fontSize`. Measured with the same kind of cell the label
+    /// draws with, so the line height matches what is drawn.
+    static func measure(_ text: String, fontSize: CGFloat, width: CGFloat) -> NSSize {
+        let cell = NSTextFieldCell(textCell: text)
+        cell.font = .systemFont(ofSize: fontSize)
+        cell.wraps = true
+        cell.lineBreakMode = .byWordWrapping
+        let size = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: 100_000))
+        return NSSize(width: ceil(size.width), height: ceil(size.height))
+    }
+
+    /// The window size for pinning `text`: black on white, wrapped at 560 points, cut off at `maxHeight`.
+    static func textPinSize(_ text: String, maxHeight: CGFloat) -> NSSize {
+        let pad = textPadding
+        let width = min(560, measure(text, fontSize: textFontSize, width: 560 - 2 * pad).width + 2 * pad)
+        let height = measure(text, fontSize: textFontSize, width: width - 2 * pad).height + 2 * pad
+        return NSSize(width: width, height: min(height, maxHeight))
+    }
+
+    /// Shows text instead of a picture; `size` is the pinned size.
+    func setText(_ string: String, size: NSSize) {
+        text = string
+        cg = nil
+        baseSize = size
+        layer?.contents = nil
+        layer?.backgroundColor = NSColor.white.cgColor
+        let l = NSTextField(wrappingLabelWithString: string)
+        l.textColor = .black
+        l.maximumNumberOfLines = 0
+        l.cell?.truncatesLastVisibleLine = true
+        l.isSelectable = false
+        label?.removeFromSuperview()
+        addSubview(l)
+        label = l
+        needsLayout = true
+    }
 
     /// Shows a screenshot.
     func set(_ bmp: NSBitmapImageRep) {
@@ -47,7 +100,11 @@ final class PinView: NSView {
         let screen = (w.screen ?? NSScreen.main)?.frame.size ?? NSSize(width: 100_000, height: 100_000)
         let maxWidth = max(min(baseSize.width * 5, screen.width, screen.height * baseSize.width / baseSize.height), baseSize.width * 0.2)
         let width = min(max(w.frame.width * factor, baseSize.width * 0.2), maxWidth)
-        let height = width * baseSize.height / baseSize.width
+        var height = width * baseSize.height / baseSize.width
+        if let t = text {   // the text re-wraps at the new font size, so its height is measured, not scaled
+            let k = width / baseSize.width, pad = PinView.textPadding * k
+            height = min(PinView.measure(t, fontSize: PinView.textFontSize * k, width: width - 2 * pad).height + 2 * pad, screen.height)
+        }
         let c = CGPoint(x: w.frame.midX, y: w.frame.midY)
         w.setFrame(NSRect(x: c.x - width / 2, y: c.y - height / 2, width: width, height: height), display: true)
     }
@@ -111,8 +168,9 @@ final class PinView: NSView {
     }
 
     @objc func copyPin() {
-        guard let b = bitmap else { return }
-        copyToClipboard(b)
+        if let t = text { copyTextToClipboard(t) }
+        else if let b = bitmap { copyToClipboard(b) }
+        else { return }
         showCopied()
     }
 
@@ -155,7 +213,9 @@ final class PinView: NSView {
         hideToast = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
-    @objc func savePin() { if let b = bitmap { Output.write(b) } }
+    @objc func savePin() {
+        if let t = text { Output.writeText(t) } else if let b = bitmap { Output.write(b) }
+    }
     @objc func zoomIn() { zoom(factor: 1.25) }
     @objc func zoomOut() { zoom(factor: 0.8) }
     @objc func actualSize() { resetZoom() }
@@ -191,10 +251,53 @@ enum Pins {
         let w = PinWindow()
         w.setFrame(frame, display: false)
         w.pinView.set(bmp)
+        return show(w)
+    }
+
+    /// Pins text as a floating window with the given frame.
+    @discardableResult
+    static func pin(text: String, frame: NSRect) -> PinWindow {
+        let w = PinWindow()
+        w.setFrame(frame, display: false)
+        w.pinView.setText(text, size: frame.size)
+        return show(w)
+    }
+
+    private static func show(_ w: PinWindow) -> PinWindow {
         active.append(w)
         w.orderFrontRegardless()
         w.makeKey()
         return w
+    }
+
+    /// Pins what is on the clipboard, centered on the screen under the cursor: a picture at its own size, or text in a
+    /// small white card. Anything bigger than the screen is shrunk (pictures) or cut off (text) to fit.
+    /// Returns false if the clipboard holds neither.
+    @discardableResult
+    static func pinClipboard() -> Bool {
+        let pb = NSPasteboard.general
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
+        let room = screen.visibleFrame.insetBy(dx: 40, dy: 40).size
+        func centered(_ size: NSSize) -> NSRect {
+            NSRect(x: screen.visibleFrame.midX - size.width / 2, y: screen.visibleFrame.midY - size.height / 2, width: size.width, height: size.height)
+        }
+        let w: PinWindow
+        if let bmp = (pb.data(forType: .png) ?? pb.data(forType: .tiff)).flatMap({ NSBitmapImageRep(data: $0) }),
+           bmp.size.width > 0, bmp.size.height > 0 {
+            let fit = min(1, room.width / bmp.size.width, room.height / bmp.size.height)
+            let size = NSSize(width: (bmp.size.width * fit).rounded(), height: (bmp.size.height * fit).rounded())
+            bmp.size = size                 // the pinned size is also the "actual size" zoom returns to
+            w = pin(bmp, frame: centered(size))
+        } else if let text = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+            let text = String(text.prefix(5000))
+            w = pin(text: text, frame: centered(PinView.textPinSize(text, maxHeight: room.height)))
+        } else {
+            return false
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+        return true
     }
 
     static func release(_ w: PinWindow) {

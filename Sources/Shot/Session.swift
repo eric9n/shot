@@ -2,13 +2,15 @@ import AppKit
 
 /// Every capture runs in its own short-lived copy of Shot (`Shot --capture <mode>`). The child freezes the screen, shows
 /// the overlay, and exits when the overlay and any pins it made are closed, so all of its memory goes back to the system.
-/// The menu-bar process never holds a screenshot.
+/// The menu-bar process never holds a screenshot. Pinning the clipboard's picture (`Shot --pin-clipboard`) works the same
+/// way, without an overlay. Text on the clipboard is pinned as text.
 ///
 /// The child talks back with one line per event on its standard output:
 ///   "copied <changeCount>"  something was put on the clipboard (the parent runs the auto-clear timer)
 ///   "overlay-closed"        the overlay is gone but pins are still open
 enum Session {
     static let flag = "--capture"
+    static let pinClipboardFlag = "--pin-clipboard"
 
     // MARK: parent (menu-bar process)
 
@@ -17,10 +19,27 @@ enum Session {
 
     /// Starts a capture in a new child, unless one is already freezing the screen.
     static func start(_ mode: Mode) {
-        guard capturing == nil, let exe = Bundle.main.executableURL else { return }
+        guard capturing == nil else { return }
+        launch([flag, String(mode.rawValue)], isCapture: true)
+    }
+
+    /// True when the clipboard holds a picture or text that can be pinned.
+    static var clipboardCanPin: Bool {
+        NSPasteboard.general.canReadItem(withDataConformingToTypes: [NSPasteboard.PasteboardType.png.rawValue, NSPasteboard.PasteboardType.tiff.rawValue,
+                                                                    NSPasteboard.PasteboardType.string.rawValue])
+    }
+
+    /// Pins the clipboard's picture or text in a new child.
+    static func pinClipboard() {
+        guard clipboardCanPin else { NSSound.beep(); return }
+        launch([pinClipboardFlag], isCapture: false)
+    }
+
+    private static func launch(_ arguments: [String], isCapture: Bool) {
+        guard let exe = Bundle.main.executableURL else { return }
         let p = Process()
         p.executableURL = exe
-        p.arguments = [flag, String(mode.rawValue)]
+        p.arguments = arguments
         let out = Pipe()
         p.standardOutput = out
         var pending = ""
@@ -44,9 +63,9 @@ enum Session {
         do {
             try p.run()
             children.append(p)
-            capturing = p
+            if isCapture { capturing = p }
         } catch {
-            NSLog("Shot: could not start capture: \(error)")
+            NSLog("Shot: could not start child: \(error)")
         }
     }
 
@@ -67,12 +86,18 @@ enum Session {
 
     // MARK: child (one capture)
 
-    /// If launched as a capture child, runs the capture and never returns.
+    /// If launched as a child (a capture, or a pin of the clipboard's picture), does its job and never returns.
     static func runChildIfRequested() {
         let args = CommandLine.arguments
+        let app = NSApplication.shared
+        if args.contains(pinClipboardFlag) {
+            app.setActivationPolicy(.accessory)
+            if !Pins.pinClipboard() { exit(1) }
+            app.run()
+            exit(0)
+        }
         guard let i = args.firstIndex(of: flag), i + 1 < args.count,
               let raw = UInt32(args[i + 1]), let mode = Mode(rawValue: raw) else { return }
-        let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         Shortcuts.installHandler()          // for the overlay's Esc hotkey
         freeze(mode)

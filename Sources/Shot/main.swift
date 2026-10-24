@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let delayItem = NSMenuItem(title: "Other Delays", action: nil, keyEquivalent: "")
         delayItem.submenu = delays
         menu.addItem(delayItem)
+        add("Pin from Clipboard", #selector(pinClipboard))
         add("Close All Pins", #selector(closePins))
         menu.addItem(.separator())
         add("Settings…", #selector(editShortcuts))
@@ -50,7 +51,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// "Close All Pins" is only available while something is pinned.
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        item.action == #selector(closePins) ? Session.hasPins : true
+        switch item.action {
+        case #selector(closePins): return Session.hasPins
+        case #selector(pinClipboard): return Session.clipboardCanPin
+        default: return true
+        }
     }
 
     /// Launching Shot again (Finder, Spotlight, Dock) reopens Settings, the way back when the icon is hidden.
@@ -65,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func repeatLast() { capture(.repeatLast) }
     @objc func delayedDefault() { capture(.delayed) }
     @objc func delayed(_ item: NSMenuItem) { Countdown.start(seconds: item.tag) { Session.start(.repeatLast) } }
+    @objc func pinClipboard() { Session.pinClipboard() }
     @objc func closePins() { Session.closeAllPins() }
     @objc func openFolder() { NSWorkspace.shared.open(saveDir) }
     @objc func editShortcuts() { SettingsWindow.show { [self] in buildMenu() } }
