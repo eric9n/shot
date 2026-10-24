@@ -55,6 +55,12 @@ enum StackIcon {
         return clamped(NSRect(x: v.maxX - o.x - diameter, y: v.maxY - o.y - diameter, width: diameter, height: diameter), in: v)
     }
 
+    /// Everything that counts as the icon on `screen`: its pouch, the plate, and the badge.
+    static func hitRect(on screen: NSScreen) -> NSRect {
+        let c = circle(on: screen)
+        return NSRect(x: c.minX - ringRoom, y: c.minY - ringRoom, width: diameter + ringRoom + badgeRoom, height: diameter + ringRoom + badgeRoom)
+    }
+
     /// Moves the icon (dragged by the user) so its window's bottom left corner is at `origin`: onto whichever screen it was
     /// dragged to, kept fully on that screen, and remembered.
     static func move(toWindowOrigin origin: NSPoint) {
