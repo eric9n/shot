@@ -103,8 +103,8 @@ enum StackIcon {
 }
 
 /// The icon, drawn in code: the pouch (clay gradient, with a smile) with a pocket square tucked in, its folded points
-/// showing, like the one in a gentleman's breast pocket; a count badge; a dashed empty pouch when nothing is stored; and
-/// a warm plate behind it while the stack is open.
+/// showing, like the one in a gentleman's breast pocket, and a count badge; the same pouch without those when nothing is
+/// stored; and a warm plate behind it while the stack is open.
 final class StackIconView: NSView {
     private(set) var count = 0              // what the badge shows
     private var active = false
@@ -176,29 +176,28 @@ final class StackIconView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if active && count > 0 {
+        if active {
             // The stack is open: the icon sits on a soft peach plate (darker than the cream pocket square, so that still shows).
             fill(NSBezierPath(roundedRect: NSRect(x: origin.x - 4, y: origin.y - 4, width: d + 8, height: d + 8), xRadius: 16, yRadius: 16),
                  (Warm.color(0xFBDABA), Warm.color(0xEFB98C)))
         }
-        let pouch = pouchPath()
-        if count == 0 {
-            // Nothing stored: an empty pouch, dashed, on a faint dark wash so it shows on light wallpapers too.
-            Warm.ink.withAlphaComponent(0.28).setFill()
-            pouch.fill()
-            Warm.color(0xFFF4E3, 0.9).setStroke()
-            pouch.lineWidth = 1.5
-            pouch.setLineDash([5, 3], count: 2, phase: 0)
-            pouch.stroke()
-            return
+        if count > 0 {
+            // A pocket square in the top of the pouch: a sand one behind with a single point, a cream one in front folded
+            // into two points. The bottoms are hidden by the pouch. They rise a little while the stack is open.
+            let lift: CGFloat = active ? 3 : 0
+            fill(softPolygon([CGPoint(x: 12, y: 18), CGPoint(x: 24, y: -1), CGPoint(x: 36, y: 18)], radius: 2.5, lift: lift), Warm.sand)
+            fill(softPolygon([CGPoint(x: 6, y: 18), CGPoint(x: 15, y: 3), CGPoint(x: 22, y: 12), CGPoint(x: 31, y: 6), CGPoint(x: 40, y: 18)],
+                             radius: 2.5, lift: lift), Warm.cream)
         }
-        // A pocket square in the top of the pouch: a sand one behind with a single point, a cream one in front folded
-        // into two points. The bottoms are hidden by the pouch. They rise a little while the stack is open.
-        let lift: CGFloat = active ? 3 : 0
-        fill(softPolygon([CGPoint(x: 12, y: 18), CGPoint(x: 24, y: -1), CGPoint(x: 36, y: 18)], radius: 2.5, lift: lift), Warm.sand)
-        fill(softPolygon([CGPoint(x: 6, y: 18), CGPoint(x: 15, y: 3), CGPoint(x: 22, y: 12), CGPoint(x: 31, y: 6), CGPoint(x: 40, y: 18)],
-                         radius: 2.5, lift: lift), Warm.cream)
-        fill(pouch, Warm.clay)
+        // The pouch is the same with or without anything in it; empty, it just has no pocket square and no badge, and it
+        // sits a little higher, in the middle of the space the pocket square would use.
+        NSGraphicsContext.saveGraphicsState()
+        if count == 0 {
+            let up = NSAffineTransform()
+            up.translateX(by: 0, yBy: 7)
+            up.concat()
+        }
+        fill(pouchPath(), Warm.clay)
         let smile = NSBezierPath()
         smile.move(to: NSPoint(x: origin.x + 15, y: origin.y + 17))
         smile.curve(to: NSPoint(x: origin.x + 31, y: origin.y + 17), controlPoint1: NSPoint(x: origin.x + 19, y: origin.y + 11),
@@ -207,8 +206,8 @@ final class StackIconView: NSView {
         smile.lineWidth = 2.5
         smile.lineCapStyle = .round
         smile.stroke()
-
-        drawBadge()
+        NSGraphicsContext.restoreGraphicsState()
+        if count > 0 { drawBadge() }
     }
 
     /// The count: a solid berry-red badge with a cream number, no outline (only a soft shadow sets it apart).
