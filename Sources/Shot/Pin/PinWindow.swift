@@ -307,6 +307,18 @@ enum Pins {
         return show(w)
     }
 
+    /// Pins text centered on `center` (screen coordinates), moved if need be so that it is wholly on that screen.
+    @discardableResult
+    static func pin(text: String, around center: CGPoint) -> PinWindow {
+        let screen = NSScreen.screens.first { $0.frame.contains(center) } ?? NSScreen.main ?? NSScreen.screens[0]
+        let v = screen.visibleFrame
+        let text = String(text.prefix(5000))
+        let size = PinView.textPinSize(text, maxHeight: v.height - 80)
+        let w = min(size.width, v.width), h = min(size.height, v.height)
+        let frame = NSRect(x: min(max(center.x - w / 2, v.minX), v.maxX - w), y: min(max(center.y - h / 2, v.minY), v.maxY - h), width: w, height: h)
+        return pin(text: text, frame: frame)
+    }
+
     private static func show(_ w: PinWindow) -> PinWindow {
         active.append(w)
         w.orderFrontRegardless()

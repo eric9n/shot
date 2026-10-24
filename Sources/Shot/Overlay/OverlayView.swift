@@ -599,7 +599,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
         }
     }
 
-    /// Reads the text in the selection (the screenshot itself, not the annotations), copies it, and closes.
+    /// Reads the text in the selection (the screenshot itself, not the annotations), copies it, pins it, and closes.
     /// The first use after a restart can take several seconds while the system prepares its text model, so a message
     /// shows meanwhile. With no text found, the overlay stays so you can pick another area.
     @objc func ocrAction() {
@@ -612,12 +612,21 @@ final class OverlayView: NSView, NSTextViewDelegate {
             guard let self = self else { return }
             self.recognizing = false
             if text.isEmpty { self.showStatus("No text found", hideAfter: 1.5); return }
-            copyTextToClipboard(text)
-            self.onClose()
+            self.finish(with: text)
         }
     }
 
-    /// Reads the QR code (or bar code) in the selection, copies what it says (one per line if there are several), and closes.
+    /// What was read from the selection: copy it, pin it as a text card where the selection was (so you can see what it says),
+    /// and close the overlay.
+    private func finish(with text: String) {
+        copyTextToClipboard(text)
+        if let s = sel, let w = window {
+            Pins.pin(text: text, around: CGPoint(x: s.midX + w.frame.minX, y: s.midY + w.frame.minY))
+        }
+        onClose()
+    }
+
+    /// Reads the QR code (or bar code) in the selection, copies and pins what it says (one per line if there are several), and closes.
     /// If there is no code, the overlay stays so you can pick another area.
     @objc func qrAction() {
         commitText()
@@ -629,8 +638,7 @@ final class OverlayView: NSView, NSTextViewDelegate {
             guard let self = self else { return }
             self.recognizing = false
             if payloads.isEmpty { self.showStatus("No QR code found", hideAfter: 1.5); return }
-            copyTextToClipboard(payloads.joined(separator: "\n"))
-            self.onClose()
+            self.finish(with: payloads.joined(separator: "\n"))
         }
     }
 
